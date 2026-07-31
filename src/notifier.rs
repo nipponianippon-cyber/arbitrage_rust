@@ -1,4 +1,5 @@
 use crate::config::{EmbedColors, NotificationConfig};
+use crate::dex::{DexKind, DexPrice};
 use crate::errors::{AppError, ErrorSeverity, MonitorErrorRecord};
 use crate::pricing::PriceSpread;
 use serde_json::{json, Value};
@@ -28,6 +29,21 @@ impl DiscordNotifier {
     pub async fn send_price_spread(&self, spread: &PriceSpread) -> Result<(), AppError> {
         self.send_payload(build_price_spread_embed_payload(
             spread,
+            &self.bot_name,
+            &self.environment,
+            &self.embed_colors,
+        ))
+        .await
+    }
+
+    pub async fn send_price_spreads(
+        &self,
+        prices: &[DexPrice],
+        spreads: &[PriceSpread],
+    ) -> Result<(), AppError> {
+        self.send_payload(build_price_spreads_embed_payload(
+            prices,
+            spreads,
             &self.bot_name,
             &self.environment,
             &self.embed_colors,
@@ -121,6 +137,65 @@ pub fn build_price_spread_embed_payload(
     })
 }
 
+/// 3 DEXの価格と全組み合わせ価格差を1つのDiscord Embedへまとめる。
+pub fn build_price_spreads_embed_payload(
+    prices: &[DexPrice],
+    spreads: &[PriceSpread],
+    bot_name: &str,
+    environment: &str,
+    embed_colors: &EmbedColors,
+) -> Value {
+    let slot = prices
+        .iter()
+        .filter_map(|price| price.slot)
+        .max()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "n/a".to_string());
+    let observed_at = prices
+        .iter()
+        .map(|price| price.observed_at)
+        .max()
+        .unwrap_or_else(chrono::Utc::now);
+    let mut fields = vec![
+        field("Raydium", price_value(prices, DexKind::Raydium), true),
+        field("Orca", price_value(prices, DexKind::Orca), true),
+        field("Meteora-DLMM", price_value(prices, DexKind::MeteoraDlmm), true),
+    ];
+
+    // Discordには詳細なMeteora内部状態を出さず、比較に必要な概要だけを載せる。
+    for spread in spreads {
+        fields.push(field(
+            format!("{} vs {}", spread.dex_a.dex, spread.dex_b.dex),
+            format!(
+                "{} USDC / {} bps\nHigher: {}\nLower: {}\n{}",
+                spread.absolute_spread,
+                spread.spread_bps,
+                spread.higher_dex,
+                spread.lower_dex,
+                spread.comparison_direction
+            ),
+            false,
+        ));
+    }
+    fields.push(field("Slot", slot, true));
+    fields.push(field("Observed", observed_at.to_rfc3339(), true));
+    fields.push(field("Errors", "none", true));
+
+    json!({
+        "username": bot_name,
+        "embeds": [{
+            "title": "SOL/USDC Price Spread",
+            "description": "Raydium, Orca, and Meteora-DLMM price spread summary",
+            "color": embed_colors.normal,
+            "fields": fields,
+            "timestamp": observed_at.to_rfc3339(),
+            "footer": {
+                "text": format!("{environment} | Helius HTTP RPC")
+            }
+        }]
+    })
+}
+
 pub fn build_error_embed_payload(
     error: &MonitorErrorRecord,
     bot_name: &str,
@@ -161,4 +236,12 @@ fn field(name: impl Into<String>, value: impl Into<String>, inline: bool) -> Val
         "value": value.into(),
         "inline": inline,
     })
+}
+
+fn price_value(prices: &[DexPrice], dex: DexKind) -> String {
+    prices
+        .iter()
+        .find(|price| price.dex == dex)
+        .map(|price| format!("{} USDC", price.price))
+        .unwrap_or_else(|| "n/a".to_string())
 }

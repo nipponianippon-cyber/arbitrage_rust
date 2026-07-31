@@ -1,10 +1,12 @@
 use crate::config::{AppConfig, PoolConfig};
+use crate::dex::meteora;
+use crate::dex::meteora::MeteoraDlmmState;
 use crate::dex::orca;
 use crate::dex::raydium;
 use crate::dex::{DexKind, DexPrice, PoolAccounts};
 use crate::errors::{AppError, ErrorSeverity, MonitorErrorRecord};
 use crate::notifier::DiscordNotifier;
-use crate::pricing::calculate_spread;
+use crate::pricing::calculate_all_spreads;
 use crate::rpc::{AccountData, RpcClient};
 use crate::storage::Storage;
 use std::collections::HashMap;
@@ -17,7 +19,7 @@ pub async fn run_once(
     notifier: &DiscordNotifier,
 ) -> Result<(), AppError> {
     let enabled: Vec<&PoolConfig> = config.pools.iter().filter(|pool| pool.enabled).collect();
-    let pool_addresses: Vec<String> = enabled.iter().map(|pool| pool.pool_address.clone()).collect();
+    let pool_addresses: Vec<String> = enabled.iter().map(|pool| pool.account_address()).collect();
     let pool_accounts = rpc.get_multiple_accounts(&pool_addresses).await?;
     let account_map: HashMap<String, AccountData> = pool_accounts
         .into_iter()
@@ -27,8 +29,8 @@ pub async fn run_once(
     let mut vault_addresses = Vec::new();
     for pool in &enabled {
         let account = account_map
-            .get(&pool.pool_address)
-            .ok_or_else(|| AppError::Rpc(format!("missing fetched pool account {}", pool.pool_address)))?;
+            .get(&pool.account_address())
+            .ok_or_else(|| AppError::Rpc(format!("missing fetched pool account {}", pool.account_address())))?;
         match pool.dex {
             DexKind::Raydium => {
                 let meta = raydium::decode_pool_meta(&account.data)?;
@@ -40,6 +42,9 @@ pub async fn run_once(
                 let (base_vault, quote_vault) = orca::vault_addresses_for_config(pool, &meta)?;
                 vault_addresses.push(base_vault);
                 vault_addresses.push(quote_vault);
+            }
+            DexKind::MeteoraDlmm => {
+                let _meta = meteora::decode_pool_meta(&account.data)?;
             }
         }
     }
@@ -55,18 +60,21 @@ pub async fn run_once(
     let mut prices = Vec::new();
     for pool in enabled {
         match decode_pool_price(pool, &all_accounts) {
-            Ok(price) => {
+            Ok((price, meteora_state)) => {
                 storage.insert_price_observation(&price)?;
+                if let Some(state) = meteora_state {
+                    storage.insert_meteora_dlmm_state(&state)?;
+                }
                 prices.push(price);
             }
             Err(error) => {
                 let record = error
                     .to_monitor_record()
-                    .with_pool_context(pool.dex, pool.pool_address.clone());
+                    .with_pool_context(pool.dex, pool.account_address());
                 storage.insert_failed_price_observation(
                     pool.dex.as_str(),
                     &pool.pair,
-                    &pool.pool_address,
+                    &pool.account_address(),
                     &error,
                 )?;
                 storage.insert_monitor_error(&record)?;
@@ -79,33 +87,30 @@ pub async fn run_once(
         }
     }
 
-    let raydium = prices.iter().find(|price| price.dex == DexKind::Raydium).cloned();
-    let orca = prices.iter().find(|price| price.dex == DexKind::Orca).cloned();
-    match (raydium, orca) {
-        (Some(raydium), Some(orca)) => {
-            let spread = calculate_spread(raydium, orca)?;
-            storage.insert_price_spread(&spread)?;
-            if config.notification.notify_every_cycle {
-                if let Err(error) = notifier.send_price_spread(&spread).await {
-                    let record = error.to_monitor_record();
-                    eprintln!("{error}");
-                    storage.insert_monitor_error(&record)?;
-                }
+    if prices.len() == 3 {
+        let spreads = calculate_all_spreads(&prices)?;
+        for spread in &spreads {
+            storage.insert_price_spread(spread)?;
+        }
+        if config.notification.notify_every_cycle {
+            if let Err(error) = notifier.send_price_spreads(&prices, &spreads).await {
+                let record = error.to_monitor_record();
+                eprintln!("{error}");
+                storage.insert_monitor_error(&record)?;
             }
         }
-        _ => {
-            let record = MonitorErrorRecord::new(
-                "runner",
-                ErrorSeverity::Warning,
-                "skipped spread calculation because one or more DEX prices were unavailable",
-                None,
-            )
-            .with_consecutive_count(1);
-            storage.insert_monitor_error(&record)?;
-            if config.notification.notify_on_error {
-                if let Err(error) = notifier.send_error(&record).await {
-                    eprintln!("{error}");
-                }
+    } else {
+        let record = MonitorErrorRecord::new(
+            "runner",
+            ErrorSeverity::Warning,
+            "skipped spread calculation because one or more of the three DEX prices were unavailable",
+            None,
+        )
+        .with_consecutive_count(1);
+        storage.insert_monitor_error(&record)?;
+        if config.notification.notify_on_error {
+            if let Err(error) = notifier.send_error(&record).await {
+                eprintln!("{error}");
             }
         }
     }
@@ -146,10 +151,10 @@ pub async fn run_forever(
 fn decode_pool_price(
     pool: &PoolConfig,
     accounts: &HashMap<String, AccountData>,
-) -> Result<DexPrice, AppError> {
+) -> Result<(DexPrice, Option<MeteoraDlmmState>), AppError> {
     let pool_account = accounts
-        .get(&pool.pool_address)
-        .ok_or_else(|| AppError::Rpc(format!("missing fetched pool account {}", pool.pool_address)))?
+        .get(&pool.account_address())
+        .ok_or_else(|| AppError::Rpc(format!("missing fetched pool account {}", pool.account_address())))?
         .clone();
 
     match pool.dex {
@@ -160,7 +165,7 @@ fn decode_pool_price(
                 base_vault: accounts.get(&meta.base_vault).cloned(),
                 quote_vault: accounts.get(&meta.quote_vault).cloned(),
             };
-            raydium::decode_price(pool, &pool_accounts)
+            raydium::decode_price(pool, &pool_accounts).map(|price| (price, None))
         }
         DexKind::Orca => {
             let meta = orca::decode_pool_meta(&pool_account.data)?;
@@ -170,7 +175,13 @@ fn decode_pool_price(
                 base_vault: accounts.get(&base_vault).cloned(),
                 quote_vault: accounts.get(&quote_vault).cloned(),
             };
-            orca::decode_price(pool, &pool_accounts)
+            orca::decode_price(pool, &pool_accounts).map(|price| (price, None))
+        }
+        DexKind::MeteoraDlmm => {
+            let pool_accounts = meteora::MeteoraPoolAccounts {
+                lb_pair: pool_account,
+            };
+            meteora::decode_price(pool, &pool_accounts).map(|(price, state)| (price, Some(state)))
         }
     }
 }

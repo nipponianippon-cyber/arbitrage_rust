@@ -1,5 +1,6 @@
 pub mod orca;
 pub mod raydium;
+pub mod meteora;
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -11,6 +12,7 @@ use std::str::FromStr;
 pub enum DexKind {
     Raydium,
     Orca,
+    MeteoraDlmm,
 }
 
 impl DexKind {
@@ -18,6 +20,7 @@ impl DexKind {
         match self {
             Self::Raydium => "Raydium",
             Self::Orca => "Orca",
+            Self::MeteoraDlmm => "Meteora-DLMM",
         }
     }
 }
@@ -35,6 +38,7 @@ impl FromStr for DexKind {
         match value.to_ascii_lowercase().as_str() {
             "raydium" => Ok(Self::Raydium),
             "orca" => Ok(Self::Orca),
+            "meteora" | "meteora_dlmm" | "meteora-dlmm" => Ok(Self::MeteoraDlmm),
             other => Err(format!("unsupported dex `{other}`")),
         }
     }
@@ -66,6 +70,7 @@ pub struct DexPrice {
     pub pool_address: String,
     pub price: Decimal,
     pub fee_adjusted_price: Option<Decimal>,
+    pub slippage_adjusted_price: Option<Decimal>,
     pub liquidity: Option<Decimal>,
     pub slot: Option<u64>,
     pub observed_at: DateTime<Utc>,

@@ -1,4 +1,5 @@
 use crate::dex::DexPrice;
+use crate::dex::meteora::MeteoraDlmmState;
 use crate::errors::{AppError, MonitorErrorRecord};
 use crate::pricing::PriceSpread;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -63,6 +64,38 @@ impl Storage {
                 pool_address TEXT,
                 retry_planned INTEGER NOT NULL DEFAULT 1,
                 consecutive_count INTEGER NOT NULL DEFAULT 1
+            );
+
+            CREATE TABLE IF NOT EXISTS price_spread_pairs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                calculated_at TEXT NOT NULL,
+                pair TEXT NOT NULL,
+                dex_a TEXT NOT NULL,
+                dex_b TEXT NOT NULL,
+                dex_a_price TEXT NOT NULL,
+                dex_b_price TEXT NOT NULL,
+                absolute_spread TEXT NOT NULL,
+                spread_bps TEXT NOT NULL,
+                higher_dex TEXT NOT NULL,
+                lower_dex TEXT NOT NULL,
+                comparison_direction TEXT,
+                fee_adjusted_reference_spread TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS meteora_dlmm_states (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observed_at TEXT NOT NULL,
+                lb_pair_address TEXT NOT NULL,
+                active_id INTEGER NOT NULL,
+                bin_step INTEGER NOT NULL,
+                token_x_mint TEXT NOT NULL,
+                token_y_mint TEXT NOT NULL,
+                base_fee_bps TEXT,
+                variable_fee_bps TEXT,
+                total_fee_bps TEXT,
+                status TEXT,
+                liquidity TEXT,
+                slot INTEGER
             );
             ",
         )?;
@@ -132,6 +165,12 @@ impl Storage {
     }
 
     pub fn insert_price_spread(&self, spread: &PriceSpread) -> Result<(), AppError> {
+        self.insert_price_spread_pair(spread)?;
+        if spread.dex_a.dex != crate::dex::DexKind::Raydium
+            || spread.dex_b.dex != crate::dex::DexKind::Orca
+        {
+            return Ok(());
+        }
         let raydium_price = price_for_dex(spread, "Raydium")?;
         let orca_price = price_for_dex(spread, "Orca")?;
         self.conn.execute(
@@ -155,6 +194,62 @@ impl Storage {
                 spread
                     .fee_adjusted_reference_spread
                     .map(|value| value.to_string()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_price_spread_pair(&self, spread: &PriceSpread) -> Result<(), AppError> {
+        self.conn.execute(
+            "
+            INSERT INTO price_spread_pairs (
+                calculated_at, pair, dex_a, dex_b, dex_a_price, dex_b_price,
+                absolute_spread, spread_bps, higher_dex, lower_dex,
+                comparison_direction, fee_adjusted_reference_spread
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ",
+            params![
+                spread.calculated_at.to_rfc3339(),
+                spread.pair.as_str(),
+                spread.dex_a.dex.as_str(),
+                spread.dex_b.dex.as_str(),
+                spread.dex_a.price.to_string(),
+                spread.dex_b.price.to_string(),
+                spread.absolute_spread.to_string(),
+                spread.spread_bps.to_string(),
+                spread.higher_dex.as_str(),
+                spread.lower_dex.as_str(),
+                spread.comparison_direction.as_str(),
+                spread
+                    .fee_adjusted_reference_spread
+                    .map(|value| value.to_string()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_meteora_dlmm_state(&self, state: &MeteoraDlmmState) -> Result<(), AppError> {
+        self.conn.execute(
+            "
+            INSERT INTO meteora_dlmm_states (
+                observed_at, lb_pair_address, active_id, bin_step, token_x_mint,
+                token_y_mint, base_fee_bps, variable_fee_bps, total_fee_bps,
+                status, liquidity, slot
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            ",
+            params![
+                state.observed_at.to_rfc3339(),
+                state.lb_pair_address.as_str(),
+                state.active_id,
+                state.bin_step,
+                state.token_x_mint.as_str(),
+                state.token_y_mint.as_str(),
+                state.base_fee_bps.map(|value| value.to_string()),
+                state.variable_fee_bps.map(|value| value.to_string()),
+                state.total_fee_bps.map(|value| value.to_string()),
+                state.status.as_deref(),
+                state.liquidity.map(|value| value.to_string()),
+                state.slot,
             ],
         )?;
         Ok(())

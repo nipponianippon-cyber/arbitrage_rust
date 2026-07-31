@@ -59,6 +59,31 @@ pub fn calculate_spread(dex_a: DexPrice, dex_b: DexPrice) -> Result<PriceSpread,
     })
 }
 
+/// 取得できたDEX価格から、重複しない全組み合わせの価格差を作る。
+pub fn calculate_all_spreads(prices: &[DexPrice]) -> Result<Vec<PriceSpread>, AppError> {
+    if prices.len() < 3 {
+        return Err(AppError::Pricing(
+            "Raydium, Orca, and Meteora-DLMM prices are required".to_string(),
+        ));
+    }
+
+    let raydium = find_price(prices, DexKind::Raydium)?;
+    let orca = find_price(prices, DexKind::Orca)?;
+    let meteora = find_price(prices, DexKind::MeteoraDlmm)?;
+    Ok(vec![
+        calculate_spread((*raydium).clone(), (*orca).clone())?,
+        calculate_spread((*raydium).clone(), (*meteora).clone())?,
+        calculate_spread((*orca).clone(), (*meteora).clone())?,
+    ])
+}
+
+fn find_price(prices: &[DexPrice], dex: DexKind) -> Result<&DexPrice, AppError> {
+    prices
+        .iter()
+        .find(|price| price.dex == dex)
+        .ok_or_else(|| AppError::Pricing(format!("missing {} price", dex.as_str())))
+}
+
 pub fn fee_adjusted_buy_price(price: Decimal, fee_rate: Decimal) -> Result<Decimal, AppError> {
     if price <= Decimal::ZERO || fee_rate < Decimal::ZERO {
         return Err(AppError::Pricing(

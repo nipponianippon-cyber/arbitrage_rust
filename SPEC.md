@@ -4,7 +4,7 @@
 
 BotはHeliusのSolana RPCノードを利用し、Solana上の複数DEX間におけるトークン価格を定期監視する。
 
-初期実装ではRaydiumとOrcaのSOL/USDCプールを対象に、オンチェーンのプール状態を直接取得して価格を算出し、DEX間の価格差をDiscordへ通知する。
+初期実装ではRaydium、Orca、Meteora-DLMMのSOL/USDCプールを対象に、オンチェーンのプール状態を直接取得して価格を算出し、DEX間の価格差をDiscordへ通知する。
 
 将来的には、この価格監視基盤を自動売買Botへ拡張できる設計とする。ただし初期実装では発注、署名、ウォレット操作、トランザクション送信は行わない。
 
@@ -15,9 +15,10 @@ BotはHeliusのSolana RPCノードを利用し、Solana上の複数DEX間にお�
 - Helius RPCを使ったSolanaオンチェーンデータ取得
 - RaydiumのSOL/USDCプール価格監視
 - OrcaのSOL/USDCプール価格監視
+- Meteora-DLMMのSOL/USDC LbPair価格監視
 - 設定ファイルによる監視対象プール指定
 - 30秒間隔の定期監視
-- RaydiumとOrcaの価格差計算
+- Raydium、Orca、Meteora-DLMMの全組み合わせ価格差計算
 - Discord Embedによるリッチ通知
 - SQLiteへのログ保存
 - RPCエラー、価格取得失敗、Discord通知失敗などの異常検知と通知
@@ -30,6 +31,7 @@ BotはHeliusのSolana RPCノードを利用し、Solana上の複数DEX間にお�
 - Jupiterなどのオフチェーン集約APIを使った価格取得
 - Helius WebSocket、Enhanced API、Webhookの利用
 - 複数トークンペアの動的探索
+- Meteora-DLMMプールの自動探索
 - 裁定利益の確定判定
 
 ## 3. 前提条件
@@ -39,14 +41,18 @@ BotはHeliusのSolana RPCノードを利用し、Solana上の複数DEX間にお�
 - Solana RPCプロバイダはHeliusを利用する。
 - 初期実装ではHeliusのHTTP RPCのみを利用する。
 - 監視対象プールはBotが自動探索せず、設定ファイルで明示指定する。
+- Meteora-DLMMのLbPairアドレスは初期実装では設定ファイルで手動指定する。
+- Meteora-DLMMの自動探索は将来対応とする。
 - 監視対象ペアは初期実装ではSOL/USDCのみとする。
 - 価格はオンチェーンプール状態からBot内部で算出する。
 - DEX手数料とスリッページは考慮する。ただし初期実装での詳細な扱いは「推奨設計」に従う。
+- 価格比較の基準は全DEXで`USDC per SOL`に統一する。
+- Meteora-DLMMの実装では公式SDKまたは既存crateの利用を許可する。
 
 ## 4. 対象取引
 
 - チェーン: Solana mainnet
-- 対象DEX: Raydium, Orca
+- 対象DEX: Raydium, Orca, Meteora-DLMM
 - 対象ペア: SOL/USDC
 - 取引種別: 初期実装では取引なし。価格監視のみ。
 - 将来想定: DEX間の価格差を利用した自動裁定取引
@@ -74,6 +80,7 @@ Botは起動時に`.env`と`config.toml`を読み込む。
 - 対象トークンペア
 - Raydiumプールアドレス
 - Orcaプールアドレス
+- Meteora-DLMM LbPairアドレス
 - SQLite DBパス
 - 通知設定
 - エラー通知設定
@@ -81,9 +88,13 @@ Botは起動時に`.env`と`config.toml`を読み込む。
 
 ### 5.2 プール状態取得
 
-Botは30秒ごとにHelius HTTP RPCへリクエストし、設定ファイルで指定されたRaydiumおよびOrcaのプールアカウント情報を取得する。
+Botは30秒ごとにHelius HTTP RPCへリクエストし、設定ファイルで指定されたRaydium、Orca、Meteora-DLMMのプールアカウント情報を取得する。
 
 Botは取得したアカウントデータをDEXごとのプール形式に従ってデコードし、SOL/USDC価格を算出する。
+
+Meteora-DLMMでは、初期実装の監視価格は現在のactive bin価格とする。BotはLbPairアカウントから`active_id`、`bin_step`、トークンmint、手数料関連情報、プール状態を取得する。
+
+スリッページ計算を行う場合、Botはactive bin周辺のBinArrayも取得し、公式SDKまたは既存crateのquoteロジックを利用して想定取引サイズに対する価格インパクトを算出する。
 
 ### 5.3 価格計算
 
@@ -98,15 +109,19 @@ Botは各DEXのプール状態から以下を算出する。
 
 - 基本価格はプール残高または現在価格から算出する。
 - DEX手数料は設定値として持ち、比較用価格に反映する。
-- 価格インパクト計算は実装可能な範囲で関数を分離し、取引サイズ未設定時は無効化する。
+- 価格インパクト計算は実装可能な範囲で関数を分離する。
+- スリッページ計算を有効にする場合、設定ファイルで想定取引サイズを必須にする。
+- Meteora-DLMMではactive bin価格を基準価格とし、手数料とスリッページは公式SDKまたは既存crateのquote結果に基づいて算出する。
+- Meteora-DLMMの手数料は、実装上取得可能なbase fee、variable fee、その他必要な手数料を考慮する。
 - 将来自動売買を行う場合、想定取引サイズごとの見積もり計算を追加する。
 
 ### 5.4 価格差計算
 
-BotはRaydiumとOrcaのSOL/USDC価格を比較し、以下を算出する。
+BotはRaydium、Orca、Meteora-DLMMのSOL/USDC価格を全組み合わせで比較し、以下を算出する。
 
 - Raydium価格
 - Orca価格
+- Meteora-DLMM価格
 - 絶対価格差
 - 価格差率
 - 高いDEX
@@ -115,7 +130,7 @@ BotはRaydiumとOrcaのSOL/USDC価格を比較し、以下を算出する。
 
 裁定判定しきい値は未定とする。
 
-初期実装では、価格差の大小にかかわらず、監視サイクルごとに価格差をDiscordへ通知する。
+初期実装では、価格差の大小にかかわらず、監視サイクルごとに全組み合わせの価格差をDiscordへ通知する。
 
 ### 5.5 Discord通知
 
@@ -129,6 +144,7 @@ Discord通知はWebhookのEmbed機能を使い、価格差、DEX別価格、異�
 - 対象ペア
 - Raydium価格
 - Orca価格
+- Meteora-DLMM価格
 - 価格差
 - 価格差率
 - 高いDEX
@@ -137,6 +153,8 @@ Discord通知はWebhookのEmbed機能を使い、価格差、DEX別価格、異�
 - RPC取得slot
 - 手数料考慮後の参考差分
 - エラー有無
+
+Discord通知にはMeteora-DLMM固有の`active_id`、`bin_step`、fee、statusなどの詳細情報は表示しない。これらの詳細情報はSQLiteへ保存する。
 
 Embedの表示仕様は以下とする。
 
@@ -170,10 +188,17 @@ Botは監視結果をSQLiteへ保存する。
 - 対象ペア
 - DEX名
 - プールアドレス
+- Meteora-DLMM LbPairアドレス
 - 算出価格
 - 手数料考慮後価格
 - 価格差
 - 価格差率
+- Meteora-DLMMの`active_id`
+- Meteora-DLMMの`bin_step`
+- Meteora-DLMMのbase fee
+- Meteora-DLMMのvariable fee
+- Meteora-DLMMのstatus
+- Meteora-DLMMのliquidity
 - RPCレスポンスの成否
 - エラー種別
 - エラーメッセージ
@@ -213,6 +238,7 @@ Botは監視結果をSQLiteへ保存する。
 - `dex`: DEX共通インターフェース
 - `dex::raydium`: Raydiumプールデコードと価格計算
 - `dex::orca`: Orcaプールデコードと価格計算
+- `dex::meteora_dlmm`: Meteora-DLMM LbPair/BinArrayデコード、active bin価格、quote計算
 - `pricing`: 価格差、手数料、スリッページ計算
 - `storage`: SQLite保存
 - `notifier`: Discord通知
@@ -226,7 +252,7 @@ Botは監視結果をSQLiteへ保存する。
 3. 30秒ごとにHelius RPCからプールアカウントを取得する。
 4. DEX別デコーダでプール状態を解釈する。
 5. SOL/USDC価格を算出する。
-6. DEX間価格差を計算する。
+6. DEX間価格差を全組み合わせで計算する。
 7. 結果をSQLiteへ保存する。
 8. Discordへ価格差を通知する。
 9. エラー発生時はSQLiteへ記録し、必要に応じてDiscordへ異常通知する。
@@ -240,8 +266,10 @@ PoolConfig
 - dex: DexKind
 - pair: String
 - pool_address: String
+- lb_pair_address: Option<String>
 - base_mint: String
 - quote_mint: String
+- price_orientation: String
 - enabled: bool
 ```
 
@@ -254,6 +282,7 @@ DexPrice
 - pool_address: String
 - price: Decimal
 - fee_adjusted_price: Option<Decimal>
+- slippage_adjusted_price: Option<Decimal>
 - liquidity: Option<Decimal>
 - slot: Option<u64>
 - observed_at: DateTime
@@ -284,6 +313,24 @@ MonitorError
 - source: Option<String>
 ```
 
+### 9.5 MeteoraDlmmState
+
+```text
+MeteoraDlmmState
+- lb_pair_address: String
+- active_id: i32
+- bin_step: u16
+- token_x_mint: String
+- token_y_mint: String
+- base_fee_bps: Option<Decimal>
+- variable_fee_bps: Option<Decimal>
+- total_fee_bps: Option<Decimal>
+- status: Option<String>
+- liquidity: Option<Decimal>
+- slot: Option<u64>
+- observed_at: DateTime
+```
+
 ## 10. 外部API
 
 ### 10.1 Helius RPC
@@ -307,6 +354,12 @@ Discordへの通知ペイロードは`embeds`を含むJSONとする。通常通�
 
 通知送信失敗時はSQLiteへエラーを記録する。連続失敗時は標準出力または標準エラーにも出力する。
 
+### 10.3 Meteora-DLMM SDKまたは既存crate
+
+Meteora-DLMMのLbPair、BinArray、手数料、quote計算は公式SDKまたは既存crateの利用を許可する。
+
+BotはMeteora-DLMMのアカウントレイアウト、PDA導出、quote計算を自前実装する場合でも、公式SDKまたは既存crateの挙動と照合できる形でテストする。
+
 ## 11. 設定項目
 
 推奨する`config.toml`構成は以下とする。
@@ -322,7 +375,9 @@ path = "data/arbitrage_monitor.sqlite"
 [pricing]
 consider_dex_fee = true
 consider_slippage = true
-trade_size_usdc = null
+# 例。最終値は未定。consider_slippage = true の場合は正の値を必須とする。
+trade_size_usdc = 100.0
+price_orientation = "usdc_per_sol"
 
 [notification]
 discord_enabled = true
@@ -352,6 +407,16 @@ pool_address = "未定"
 base_mint = "So11111111111111111111111111111111111111112"
 quote_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 enabled = true
+
+[[pools]]
+dex = "meteora_dlmm"
+pair = "SOL/USDC"
+lb_pair_address = "未定"
+base_mint = "So11111111111111111111111111111111111111112"
+quote_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+price_orientation = "usdc_per_sol"
+auto_discovery = false
+enabled = true
 ```
 
 `.env`構成は以下とする。
@@ -369,11 +434,14 @@ SQLiteには以下のテーブルを用意する。
 
 - `price_observations`
 - `price_spreads`
+- `meteora_dlmm_states`
 - `monitor_errors`
 
 `price_observations`にはDEXごとの価格取得結果を保存する。
 
 `price_spreads`にはDEX間の比較結果を保存する。
+
+`meteora_dlmm_states`にはMeteora-DLMMの`active_id`、`bin_step`、手数料、status、liquidityなどの固有状態を保存する。
 
 `monitor_errors`にはRPC、デコード、価格計算、DB保存、Discord通知のエラーを保存する。
 
@@ -389,14 +457,17 @@ BotはDiscord WebhookのEmbed機能を使って通知する。
   "embeds": [
     {
       "title": "SOL/USDC Price Spread",
-      "description": "Raydium と Orca の価格差を検出しました。",
+      "description": "Raydium、Orca、Meteora-DLMM の価格差を検出しました。",
       "color": 3447003,
       "fields": [
         { "name": "Raydium", "value": "000.0000 USDC", "inline": true },
         { "name": "Orca", "value": "000.0000 USDC", "inline": true },
-        { "name": "Spread", "value": "0.0000 USDC / 0.00 bps", "inline": false },
+        { "name": "Meteora-DLMM", "value": "000.0000 USDC", "inline": true },
+        { "name": "Raydium vs Orca", "value": "0.0000 USDC / 0.00 bps", "inline": false },
+        { "name": "Raydium vs Meteora-DLMM", "value": "0.0000 USDC / 0.00 bps", "inline": false },
+        { "name": "Orca vs Meteora-DLMM", "value": "0.0000 USDC / 0.00 bps", "inline": false },
         { "name": "Higher", "value": "Raydium", "inline": true },
-        { "name": "Lower", "value": "Orca", "inline": true },
+        { "name": "Lower", "value": "Meteora-DLMM", "inline": true },
         { "name": "Slot", "value": "000000000", "inline": true }
       ],
       "footer": {
@@ -446,6 +517,9 @@ Botは以下のエラーを分類して扱う。
 - RPCレスポンス不正
 - プールアカウント未取得
 - DEXプールデコード失敗
+- Meteora-DLMM LbPairデコード失敗
+- Meteora-DLMM BinArray取得失敗
+- Meteora-DLMM quote計算失敗
 - 価格計算失敗
 - SQLite保存失敗
 - Discord通知失敗
@@ -455,7 +529,7 @@ Botは以下のエラーを分類して扱う。
 - 設定ファイル不備は起動時に検出し、Botを停止する。
 - 一時的なRPC失敗はリトライ対象とする。
 - 同一コンポーネントで連続エラーが発生した場合はDiscordへ異常通知する。
-- 片方のDEX価格取得に失敗した場合、そのサイクルでは価格差計算をスキップする。
+- Raydium、Orca、Meteora-DLMMのいずれか1つでも価格取得に失敗した場合、そのサイクル全体を失敗扱いとし、価格差計算をスキップする。
 - エラーは可能な限りSQLiteへ保存する。
 - Discord通知失敗時は標準エラーへ出力する。
 
@@ -466,6 +540,10 @@ Botは以下のエラーを分類して扱う。
 - 設定ファイルの読み込みとバリデーション
 - Raydiumプールデコード
 - Orcaプールデコード
+- Meteora-DLMM LbPairデコード
+- Meteora-DLMM BinArray取得結果の解釈
+- Meteora-DLMM active bin価格計算
+- Meteora-DLMM quote計算
 - 価格計算
 - 手数料考慮後価格の計算
 - スリッページ計算の有効・無効切り替え
@@ -477,7 +555,7 @@ Botは以下のエラーを分類して扱う。
 ### 14.2 結合テスト
 
 - モックRPCレスポンスを使った監視サイクルの実行
-- 片方のDEX取得失敗時の挙動
+- Raydium、Orca、Meteora-DLMMのいずれか1つが取得失敗した時の挙動
 - SQLite保存失敗時の挙動
 - Discord通知失敗時の挙動
 - Discord Embedペイロード生成とWebhook送信
@@ -486,21 +564,24 @@ Botは以下のエラーを分類して扱う。
 ### 14.3 手動確認
 
 - ローカル環境でBotを起動できること
-- 30秒ごとにRaydiumとOrcaの価格を取得すること
+- 30秒ごとにRaydium、Orca、Meteora-DLMMの価格を取得すること
 - 各サイクルでDiscord通知が送信されること
 - Discord通知がEmbed形式で表示されること
 - SQLiteに価格観測結果と価格差が保存されること
+- SQLiteにMeteora-DLMM固有状態が保存されること
 - RPC障害や不正設定時に異常通知されること
 
 ## 15. 未決事項
 
 - Raydium SOL/USDCの具体的なプールアドレス
 - Orca SOL/USDCの具体的なプールアドレス
+- Meteora-DLMM SOL/USDCの具体的なLbPairアドレス
 - 裁定判定しきい値
 - 想定取引サイズ
-- 価格インパクト計算を初期実装でどこまで厳密に行うか
+- スリッページ計算に使う想定取引サイズ
 - Raydiumで対象とするプール種別
 - Orcaで対象とするプール種別
+- Meteora-DLMMの自動探索方法
 - SQLiteスキーマの詳細
 - Discord Embed通知の最終デザイン
 - ローカル実行時の起動方法

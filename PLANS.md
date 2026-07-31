@@ -13,13 +13,13 @@
 - [x] (2026-07-31 00:00 +09:00) `SPEC.md`を再読し、対象DEXがRaydium、Orca、Meteora-DLMMへ拡張され、価格差計算が全組み合わせになったことを確認した。
 - [x] (2026-07-31 00:00 +09:00) 現在のファイル構成を確認し、`src/dex/raydium/`、`src/dex/orca/`、`src/dex/meteora/`へDEX実装が分割されていること、`src/dex/meteora/meteora_amm.rs`が途中実装であることを確認した。
 - [x] (2026-07-31 00:00 +09:00) `PLANS.md`を最新SPECに合わせて、Meteora-DLMM、全組み合わせ価格差、Discord Embed、SQLiteのMeteora固有状態保存を含む計画へ更新した。
-- [ ] `DexKind`、`PoolConfig`、設定バリデーションをMeteora-DLMMに対応させる。`dex = "meteora_dlmm"`、`lb_pair_address`、`price_orientation = "usdc_per_sol"`、`auto_discovery = false`を扱えるようにする。
-- [ ] `src/dex/meteora/meteora_amm.rs`の途中実装を完成させ、LbPairから`active_id`、`bin_step`、token mint、reserve、手数料、statusをデコードできるようにする。
-- [ ] Meteora-DLMMの基準価格をactive bin価格として算出し、全DEXの`DexPrice.price`を`USDC per SOL`へ正規化する。
-- [ ] `pricing`を2 DEX専用から任意のDEX価格リストの全組み合わせ比較へ拡張する。
-- [ ] SQLiteへ`meteora_dlmm_states`を追加し、`price_spreads`をDEXペア汎用のスキーマへ移行する。
-- [ ] Discord Embed通知を3 DEX価格と全組み合わせ価格差の表示へ更新し、Meteora-DLMM固有詳細はDiscordへ出さずSQLiteへ保存する。
-- [ ] Raydium、Orca、Meteora-DLMMのいずれか1つでも価格取得に失敗した場合、そのサイクル全体を失敗扱いにして価格差計算をスキップする。
+- [x] (2026-07-31) `DexKind`、`PoolConfig`、設定バリデーションをMeteora-DLMMに対応させた。`dex = "meteora_dlmm"`、`lb_pair_address`、`price_orientation = "usdc_per_sol"`、`auto_discovery = false`を扱えるようにした。
+- [x] (2026-07-31) `src/dex/meteora/meteora_amm.rs`の途中実装を静的に完成させ、LbPairから`active_id`、`bin_step`、token mint、reserve、手数料、statusをデコードできる形にした。
+- [x] (2026-07-31) Meteora-DLMMの基準価格をactive bin価格として算出し、`DexPrice.price`を`USDC per SOL`へ正規化する処理を追加した。
+- [x] (2026-07-31) `pricing`を2 DEX専用から任意のDEX価格リストの全組み合わせ比較へ拡張した。
+- [x] (2026-07-31) SQLiteへ`meteora_dlmm_states`を追加し、DEXペア汎用の`price_spread_pairs`へ全組み合わせを保存する方針で実装した。
+- [x] (2026-07-31) Discord Embed通知を3 DEX価格と全組み合わせ価格差の表示へ更新し、Meteora-DLMM固有詳細はDiscordへ出さずSQLiteへ保存する形にした。
+- [x] (2026-07-31) Raydium、Orca、Meteora-DLMMのいずれか1つでも価格取得に失敗した場合、そのサイクル全体を失敗扱いにして価格差計算をスキップする処理へ更新した。
 - [ ] `cargo fmt`、`cargo check`、`cargo test`を実行し、コンパイル、単体テスト、静的な仕様整合を確認する。
 
 ## 驚きと発見
@@ -32,6 +32,10 @@
   証拠: `decode_pool_meta`内で`token_x_decimal:`の後に値がなく、構造体生成が完結していない。
 - 観察: 既存の`pricing`と`storage`はRaydium/Orcaの2 DEX比較を前提としている。
   証拠: `src/pricing.rs`の`calculate_spread`は2つの`DexPrice`だけを受け取り、`src/storage.rs`の`price_spreads`は`raydium_price`と`orca_price`列を持つ。
+- 観察: `do-plan`スキルの制約により、今回の実装では`cargo fmt`、`cargo check`、`cargo test`、`cargo run`を実行していない。
+  証拠: スキルはインポート、プロジェクト実行、テスト、ビルド、実行による検証を禁止しているため、ファイル再読込、検索、差分確認だけを行った。
+- 観察: Meteora-DLMMのactive bin価格式とLbPair offsetはSDK/fixtureで未検証である。
+  証拠: `src/dex/meteora/meteora_amm.rs`には最小の静的デコーダを実装したが、公式SDK型や実アカウントとの照合は未実施である。
 
 ## 決定ログ
 
@@ -55,9 +59,13 @@
   根拠: `SPEC.md`は`active_id`、`bin_step`、fee、statusなどのMeteora-DLMM詳細をDiscordへ表示しないと指定し、詳細情報はSQLiteへ保存するとしている。
   日付/著者: 2026-07-31 / Codex
 
+- 決定: 既存の`price_spreads`はRaydium/Orca互換のため維持し、新しい全組み合わせ比較は`price_spread_pairs`へ保存する。
+  根拠: 既存DBの破壊的な`DROP TABLE`を避けつつ、Raydium vs Orca、Raydium vs Meteora-DLMM、Orca vs Meteora-DLMMの3行を自然に保存できるためである。
+  日付/著者: 2026-07-31 / Codex
+
 ## 結果と反省
 
-現時点では計画更新のみを行った。コード実装、フォーマット、コンパイル、テスト、実RPC、SQLite、Discord送信はこの更新では実施していない。次の実装作業では、まずコンパイル不能箇所になり得る`src/dex/meteora/meteora_amm.rs`を完成させ、続いて設定、価格比較、保存、通知を3 DEX前提へ拡張する必要がある。
+Meteora-DLMMを含む3 DEX監視へ向け、設定、DEX種別、Meteora-DLMMデコーダ、全組み合わせ価格差、SQLite保存、Discord Embed、runner結合を静的に実装した。`src/dex/meteora/meteora_amm.rs`の途中式は完結し、`DexKind::MeteoraDlmm`、`PoolConfig::account_address`、`calculate_all_spreads`、`price_spread_pairs`、`meteora_dlmm_states`、`build_price_spreads_embed_payload`を追加した。ただし、フォーマット、コンパイル、単体テスト、実RPC、SQLite、Discord送信は未実行である。次の作業では`cargo fmt`、`cargo check`、`cargo test`を実行し、Meteora-DLMMのoffsetと価格式を公式SDKまたはfixtureで検証する必要がある。
 
 ## コンテキストと概要
 

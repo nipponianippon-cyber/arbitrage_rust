@@ -34,6 +34,8 @@ pub struct PricingConfig {
     pub consider_dex_fee: bool,
     pub consider_slippage: bool,
     pub trade_size_usdc: Option<Decimal>,
+    #[serde(default = "default_price_orientation")]
+    pub price_orientation: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,9 +67,13 @@ pub struct EmbedColors {
 pub struct PoolConfig {
     pub dex: DexKind,
     pub pair: String,
+    #[serde(default)]
     pub pool_address: String,
+    pub lb_pair_address: Option<String>,
     pub base_mint: String,
     pub quote_mint: String,
+    pub price_orientation: Option<String>,
+    pub auto_discovery: Option<bool>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
@@ -86,6 +92,10 @@ fn default_bot_name() -> String {
 
 fn default_environment() -> String {
     "local".to_string()
+}
+
+fn default_price_orientation() -> String {
+    "usdc_per_sol".to_string()
 }
 
 fn default_normal_color() -> u32 {
@@ -155,6 +165,21 @@ pub fn validate_config(config: &AppConfig) -> Result<(), AppError> {
     if config.database.path.trim().is_empty() {
         return Err(AppError::Config("database.path must not be empty".to_string()));
     }
+    if config.pricing.price_orientation != "usdc_per_sol" {
+        return Err(AppError::Config(
+            "pricing.price_orientation must be \"usdc_per_sol\"".to_string(),
+        ));
+    }
+    if config.pricing.consider_slippage {
+        match config.pricing.trade_size_usdc {
+            Some(size) if size > Decimal::ZERO => {}
+            _ => {
+                return Err(AppError::Config(
+                    "pricing.trade_size_usdc must be set to a positive value when slippage is enabled".to_string(),
+                ))
+            }
+        }
+    }
     if !config.notification.discord_embed_enabled {
         return Err(AppError::Config(
             "notification.discord_embed_enabled must be true because Discord Embed notifications are required".to_string(),
@@ -184,9 +209,12 @@ pub fn validate_config(config: &AppConfig) -> Result<(), AppError> {
         seen_dexes.insert(pool.dex.as_str());
     }
 
-    if !seen_dexes.contains("Raydium") || !seen_dexes.contains("Orca") {
+    if !seen_dexes.contains("Raydium")
+        || !seen_dexes.contains("Orca")
+        || !seen_dexes.contains("Meteora-DLMM")
+    {
         return Err(AppError::Config(
-            "enabled SOL/USDC pools must include both Raydium and Orca".to_string(),
+            "enabled SOL/USDC pools must include Raydium, Orca, and Meteora-DLMM".to_string(),
         ));
     }
 
@@ -200,11 +228,36 @@ fn validate_pool(pool: &PoolConfig) -> Result<(), AppError> {
             pool.dex, pool.pair
         )));
     }
-    validate_address("pool_address", &pool.pool_address)?;
+    match pool.dex {
+        DexKind::Raydium | DexKind::Orca => validate_address("pool_address", &pool.pool_address)?,
+        DexKind::MeteoraDlmm => {
+            validate_address("lb_pair_address", pool.account_address().as_str())?;
+            if pool.price_orientation.as_deref() != Some("usdc_per_sol") {
+                return Err(AppError::Config(
+                    "Meteora-DLMM pool price_orientation must be \"usdc_per_sol\"".to_string(),
+                ));
+            }
+            if pool.auto_discovery.unwrap_or(false) {
+                return Err(AppError::Config(
+                    "Meteora-DLMM auto_discovery must be false in the initial implementation".to_string(),
+                ));
+            }
+        }
+    }
     validate_address("base_mint", &pool.base_mint)?;
     validate_address("quote_mint", &pool.quote_mint)?;
     crate::dex::require_sol_usdc(&pool.pair, &pool.base_mint, &pool.quote_mint)?;
     Ok(())
+}
+
+impl PoolConfig {
+    /// DEXごとに設定キーが違うため、監視対象アカウントを1つの入口で取り出す。
+    pub fn account_address(&self) -> String {
+        match self.dex {
+            DexKind::MeteoraDlmm => self.lb_pair_address.clone().unwrap_or_default(),
+            DexKind::Raydium | DexKind::Orca => self.pool_address.clone(),
+        }
+    }
 }
 
 fn validate_address(field: &str, value: &str) -> Result<(), AppError> {
