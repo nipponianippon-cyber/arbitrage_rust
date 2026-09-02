@@ -3,3 +3,4 @@
 config.toml
 config.example.toml
 data/
+.codex-target/

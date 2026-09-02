@@ -2,7 +2,7 @@ use crate::dex::DexPrice;
 use crate::dex::meteora::MeteoraDlmmState;
 use crate::errors::{AppError, MonitorErrorRecord};
 use crate::pricing::PriceSpread;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 
 pub struct Storage {
@@ -286,11 +286,9 @@ impl Storage {
     ) -> Result<(), AppError> {
         let exists: Option<String> = self
             .conn
-            .query_row(
-                &format!("PRAGMA table_info({table})"),
-                [],
-                |_| Ok(String::new()),
-            )
+            .query_row(&format!("PRAGMA table_info({table})"), [], |_| {
+                Ok(String::new())
+            })
             .optional()?;
         if exists.is_none() {
             return Ok(());
@@ -305,8 +303,10 @@ impl Storage {
             }
         }
 
-        self.conn
-            .execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"), [])?;
+        self.conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            [],
+        )?;
         Ok(())
     }
 }

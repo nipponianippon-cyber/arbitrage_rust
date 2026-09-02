@@ -20,6 +20,8 @@
 - [x] (2026-07-31) SQLiteへ`meteora_dlmm_states`を追加し、DEXペア汎用の`price_spread_pairs`へ全組み合わせを保存する方針で実装した。
 - [x] (2026-07-31) Discord Embed通知を3 DEX価格と全組み合わせ価格差の表示へ更新し、Meteora-DLMM固有詳細はDiscordへ出さずSQLiteへ保存する形にした。
 - [x] (2026-07-31) Raydium、Orca、Meteora-DLMMのいずれか1つでも価格取得に失敗した場合、そのサイクル全体を失敗扱いにして価格差計算をスキップする処理へ更新した。
+- [x] (2026-08-17) Meteora-DLMMのtoken X/Y decimalをLbPairから読まず、token X/Y mint accountを追加取得して`mint_decimals`で読む実装へ更新した。SPL TokenとToken-2022のownerを受け付け、Mint基本レイアウトの長さと初期化状態を検証する。
+- [x] (2026-08-17) Meteora-DLMMのbase fee、variable fee、total feeを公式SDK互換式へ修正した。`base_fee_bps`/`variable_fee_bps`固定offset読み取りをやめ、`parameters`と`vParameters`からraw fee rateを計算してbpsへ変換する。
 - [ ] `cargo fmt`、`cargo check`、`cargo test`を実行し、コンパイル、単体テスト、静的な仕様整合を確認する。
 
 ## 驚きと発見
@@ -28,14 +30,22 @@
   証拠: `SPEC.md`の「1. 目的」、「2. スコープ」、「3. 前提条件」、「5.2 プール状態取得」にMeteora-DLMM、LbPair、active bin、BinArray、公式SDKまたは既存crateの利用許可が記載されている。
 - 観察: 現行コードの`DexKind`には`Meteora` variantがあるが、`FromStr`は`raydium`と`orca`しか受け付けない。
   証拠: `src/dex/mod.rs`の`FromStr for DexKind`は`"meteora"`または`"meteora_dlmm"`をまだ処理していない。
-- 観察: `src/dex/meteora/meteora_amm.rs`は途中で終わっており、現時点ではコンパイル不能の可能性が高い。
-  証拠: `decode_pool_meta`内で`token_x_decimal:`の後に値がなく、構造体生成が完結していない。
+- 観察: 着手時の`src/dex/meteora/meteora_amm.rs`は途中で終わっており、コンパイル不能の可能性が高い状態だった。
+  証拠: 当初の`decode_pool_meta`内では`token_x_decimal:`の後に値がなく、構造体生成が完結していなかった。現在は構造体生成を完結させ、decimal取得をmint accountへ移した。
 - 観察: 既存の`pricing`と`storage`はRaydium/Orcaの2 DEX比較を前提としている。
   証拠: `src/pricing.rs`の`calculate_spread`は2つの`DexPrice`だけを受け取り、`src/storage.rs`の`price_spreads`は`raydium_price`と`orca_price`列を持つ。
 - 観察: `do-plan`スキルの制約により、今回の実装では`cargo fmt`、`cargo check`、`cargo test`、`cargo run`を実行していない。
   証拠: スキルはインポート、プロジェクト実行、テスト、ビルド、実行による検証を禁止しているため、ファイル再読込、検索、差分確認だけを行った。
 - 観察: Meteora-DLMMのactive bin価格式とLbPair offsetはSDK/fixtureで未検証である。
   証拠: `src/dex/meteora/meteora_amm.rs`には最小の静的デコーダを実装したが、公式SDK型や実アカウントとの照合は未実施である。
+- 観察: SPL TokenとToken-2022のMint accountは先頭82 byteの基本レイアウトを共有し、decimalはoffset 44、初期化状態はoffset 45にある前提で静的デコーダを実装した。
+  証拠: `src/dex/meteora/meteora_amm.rs`の`mint_decimals`は82 byte以上のdataと初期化済みフラグを要求し、runnerはLbPairから得たmintアドレスのaccountを追加取得して渡す。
+- 観察: Meteora公式SDKの`LbPair`には`base_fee_bps`や`variable_fee_bps`という直接読み取り用フィールドはなく、base feeとvariable feeは`parameters`、`vParameters`、`binStep`から計算する。
+  証拠: 公式SDKの`ts-client/src/dlmm/helpers/fee.ts`では`getBaseFee`、`getVariableFee`、`getTotalFee`が定義され、IDL上の`lbPair`は`parameters`と`vParameters`を持つ。`src/dex/meteora/meteora_amm.rs`は現在offset 48と56からu64を読み、計算した`base_fee`と`variable_fee`を保存値に使っていない。
+- 観察: 修正前の`variable_fee`実装は公式SDK式と異なり、`(volatilityAccumulator * binStep)`の二乗と切り上げ除算が抜けているうえ、`cargo check`で型不一致になる。
+  証拠: 公式SDKは`ceil(variableFeeControl * (volatilityAccumulator * binStep)^2 / 100_000_000_000)`を使う。ローカルの`cargo check`は`src/dex/meteora/meteora_amm.rs`の`variable_fee`関数で`expected (), found Result<Decimal, AppError>`を報告した。
+- 観察: 公式IDLの`LbPair`は`parameters`と`vParameters`の後に`pairType`、`activeId`、`binStep`、`status`が続くため、現在の`active_id`、`bin_step`、`status` offsetも手数料修正時に合わせて補正する必要があった。
+  証拠: `src/dex/meteora/meteora_amm.rs`では`ACTIVE_ID_OFFSET = 76`、`BIN_STEP_OFFSET = 80`、`STATUS_OFFSET = 82`へ更新し、token X/Y mint offset 88以降と整合させた。
 
 ## 決定ログ
 
@@ -63,9 +73,17 @@
   根拠: 既存DBの破壊的な`DROP TABLE`を避けつつ、Raydium vs Orca、Raydium vs Meteora-DLMM、Orca vs Meteora-DLMMの3行を自然に保存できるためである。
   日付/著者: 2026-07-31 / Codex
 
+- 決定: Meteora-DLMMのdecimalはLbPair dataではなく、LbPairが指すtoken X/Y mint account dataから取得する。
+  根拠: decimalはMint accountの属性であり、LbPairはmintアドレスを保持する。runnerの第2回`getMultipleAccounts`にmintアドレスを含め、SPL TokenまたはToken-2022 ownerのaccountだけを受け付ける。
+  日付/著者: 2026-08-17 / Codex
+
+- 決定: Meteora-DLMMの`base_fee_bps`、`variable_fee_bps`、`total_fee_bps`はLbPairから直接デコードした値ではなく、公式SDK互換のraw fee rateをbpsへ変換した値として保存する。
+  根拠: 公式SDKの`FEE_PRECISION`は`1_000_000_000`であり、raw fee rateを百分率にするには`raw / FEE_PRECISION * 100`、bpsにするには`raw / 100_000`となる。存在しない固定offsetフィールドを読むと、別フィールドやpaddingを手数料として扱う危険がある。
+  日付/著者: 2026-08-17 / Codex
+
 ## 結果と反省
 
-Meteora-DLMMを含む3 DEX監視へ向け、設定、DEX種別、Meteora-DLMMデコーダ、全組み合わせ価格差、SQLite保存、Discord Embed、runner結合を静的に実装した。`src/dex/meteora/meteora_amm.rs`の途中式は完結し、`DexKind::MeteoraDlmm`、`PoolConfig::account_address`、`calculate_all_spreads`、`price_spread_pairs`、`meteora_dlmm_states`、`build_price_spreads_embed_payload`を追加した。ただし、フォーマット、コンパイル、単体テスト、実RPC、SQLite、Discord送信は未実行である。次の作業では`cargo fmt`、`cargo check`、`cargo test`を実行し、Meteora-DLMMのoffsetと価格式を公式SDKまたはfixtureで検証する必要がある。
+Meteora-DLMMを含む3 DEX監視へ向け、設定、DEX種別、Meteora-DLMMデコーダ、全組み合わせ価格差、SQLite保存、Discord Embed、runner結合を静的に実装した。`src/dex/meteora/meteora_amm.rs`の途中式は完結し、token X/Y decimalはLbPairではなく追加取得したmint accountから読む形へ更新した。Meteora-DLMMのbase fee、variable fee、total feeは公式SDK互換のraw fee rate計算とbps変換へ修正し、active id、bin step、status offsetも公式IDLに合わせた。`DexKind::MeteoraDlmm`、`PoolConfig::account_address`、`calculate_all_spreads`、`price_spread_pairs`、`meteora_dlmm_states`、`build_price_spreads_embed_payload`も追加済みである。ただし、フォーマット、コンパイル、単体テスト、実RPC、SQLite、Discord送信は未実行である。次の作業では`cargo fmt`、`cargo check`、`cargo test`を実行し、Meteora-DLMMのoffsetと価格式を公式SDKまたはfixtureで検証する必要がある。
 
 ## コンテキストと概要
 
@@ -102,7 +120,9 @@ RPCはRemote Procedure Callの略で、この計画ではBotがHeliusのHTTPエ�
 
 最初に設定境界を最新SPECへ合わせる。`src/dex/mod.rs`の`DexKind`は`Raydium`、`Orca`、`MeteoraDlmm`を表現できるようにし、設定文字列として`raydium`、`orca`、`meteora_dlmm`を受け付ける。`as_str()`はDiscordとSQLiteで表示するため、`Meteora-DLMM`のように人間が読める名前を返す。`src/config.rs`の`PoolConfig`は、RaydiumとOrcaでは`pool_address`、Meteora-DLMMでは`lb_pair_address`を使えるようにする。単純化のため、内部では監視対象アカウントを返すメソッドを作り、Meteora-DLMMの`lb_pair_address`を`pool_address`相当として扱ってもよいが、設定ファイル上は`SPEC.md`に合わせて`lb_pair_address`を明示できる必要がある。
 
-次にMeteora-DLMMデコーダを完成させる。`src/dex/meteora/meteora_amm.rs`は、LbPairアカウントから`active_id`、`bin_step`、token X/Y mint、reserve X/Y、token decimals、base fee、variable fee、statusを読み取る。現在の途中実装はコンパイル不能の可能性があるため、まず構造体生成を完結させる。正確なアカウントレイアウトが不明な場合は、外部ブログへ依存せず、公式SDKまたは既存crateの型定義やテストデータを確認して、参照した事実を「驚きと発見」に記録する。ネットワークアクセスや依存追加が必要で失敗した場合は、ユーザー承認を得て再実行する。
+次にMeteora-DLMMデコーダを完成させる。`src/dex/meteora/meteora_amm.rs`は、LbPairアカウントから`active_id`、`bin_step`、token X/Y mint、reserve X/Y、`parameters`、`vParameters`、statusを読み取る。token decimalsはLbPairから直接読まず、LbPairから得たtoken X/Y mintアドレスのmint accountを`getMultipleAccounts`で追加取得し、SPL TokenまたはToken-2022のmint account layoutに基づく`mint_decimals`関数で読み取る。base feeとvariable feeはLbPair上の固定offsetから直接読むのではなく、公式SDK互換式で計算する。正確なアカウントレイアウトが不明な場合は、外部ブログへ依存せず、公式SDKまたは既存crateの型定義やテストデータを確認して、参照した事実を「驚きと発見」に記録する。ネットワークアクセスや依存追加が必要で失敗した場合は、ユーザー承認を得て再実行する。
+
+Meteora-DLMMの手数料修正では、まず`BASE_FEE_BPS_OFFSET`と`VARIABLE_FEE_BPS_OFFSET`からu64を読む処理を削除または未使用化する。`base_fee`は`baseFactor * binStep * 10 * 10^baseFeePowerFactor`でraw rateを計算し、`variable_fee`は`variableFeeControl > 0`のとき`ceil(variableFeeControl * (volatilityAccumulator * binStep)^2 / 100_000_000_000)`、それ以外は0とする。`total_fee`は`MAX_FEE_RATE = 100_000_000`で上限クリップし、SQLite保存用のbpsは`raw_rate / 100_000`へ変換する。`fee_adjusted_price`もこの`total_fee_bps`を使う。
 
 Meteora-DLMMの価格算出は、初期実装ではactive bin価格を使う。価格式はMeteora-DLMMのbin stepとactive idから得られるbin価格を、token X/Yのmintとdecimalsに基づいて`USDC per SOL`へ正規化する。SOL/USDCの向きがtoken X/Yのどちらかで変わるため、`base_mint`をWSOL、`quote_mint`をUSDCとして照合し、向きが不明ならデコードエラーにする。スリッページ計算を有効にする場合は、`pricing.consider_slippage = true`かつ`pricing.trade_size_usdc`が正の値であることを設定バリデーションで必須にし、BinArray取得とquoteロジックを別関数へ分離する。初期のactive bin価格だけでも監視は成立するが、スリッページ有効時にquoteが未実装なら設定エラーにして誤解を避ける。
 
@@ -124,7 +144,7 @@ Meteora-DLMMの価格算出は、初期実装ではactive bin価格を使う。�
 
 ### マイルストーン2: Meteora-DLMMのLbPairデコードとactive bin価格
 
-このマイルストーンでは、`src/dex/meteora/meteora_amm.rs`を完成させ、LbPairから監視に必要な状態を取り出す。完了時には、固定fixtureまたは手作りバッファで`active_id`、`bin_step`、token mint、reserve、手数料、statusを読み取る単体テストが通り、Meteora-DLMMの価格が`USDC per SOL`として`DexPrice`に入る。
+このマイルストーンでは、`src/dex/meteora/meteora_amm.rs`を完成させ、LbPairとtoken X/Y mint accountから監視に必要な状態を取り出す。完了時には、固定fixtureまたは手作りバッファで`active_id`、`bin_step`、token mint、reserve、手数料、statusをLbPairから読み取り、token decimalをmint accountから読み取る単体テストが通り、Meteora-DLMMの価格が`USDC per SOL`として`DexPrice`に入る。
 
 ### マイルストーン3: 全組み合わせ価格差と保存
 
@@ -150,7 +170,7 @@ Meteora-DLMMの価格算出は、初期実装ではactive bin価格を使う。�
 
 次に`src/config.rs`を更新する。`PoolConfig`に`lb_pair_address: Option<String>`、`price_orientation: Option<String>`、`auto_discovery: Option<bool>`を追加する。RaydiumとOrcaは`pool_address`を必須にし、Meteora-DLMMは`lb_pair_address`を必須にする。`validate_config`は有効プールにRaydium、Orca、Meteora-DLMMがすべて含まれることを確認する。`pricing.consider_slippage = true`なら`trade_size_usdc`が正の値であることを確認する。
 
-次に`src/dex/meteora/meteora_amm.rs`を完成させる。最低限、`MeteoraDlmmState`、`MeteoraPoolMeta`、`decode_pool_meta`、`decode_price`を定義する。`decode_price`は`PoolConfig`、LbPair account、必要なreserve accountまたはBinArray accountを受け、`DexPrice`と`MeteoraDlmmState`を返す。active bin価格の式、decimals補正、価格の反転条件はテストで固定する。
+次に`src/dex/meteora/meteora_amm.rs`を完成させる。最低限、`MeteoraDlmmState`、`MeteoraPoolMeta`、`decode_pool_meta`、`mint_decimals`、`decode_price`を定義する。`decode_pool_meta`はLbPair上のtoken X/Y mintアドレスだけを読み、decimalは読まない。`mint_decimals`はtoken X/Y mint account dataからdecimalを読む。`decode_price`は`PoolConfig`、LbPair account、token X/Y mint account、必要なreserve accountまたはBinArray accountを受け、`DexPrice`と`MeteoraDlmmState`を返す。active bin価格の式、decimals補正、価格の反転条件はテストで固定する。手数料テストでは、base fee raw rate、variable fee raw rate、`MAX_FEE_RATE`上限、bps変換、`variableFeeControl == 0`の0返却を固定値で検証する。
 
 次に`src/pricing.rs`を更新する。既存の`calculate_spread`を維持しつつ、`calculate_all_spreads(prices: &[DexPrice]) -> Result<Vec<PriceSpread>, AppError>`を追加する。入力が3件未満、ペア不一致、価格0以下の場合は`AppError::Pricing`にする。順序は安定させ、Raydium vs Orca、Raydium vs Meteora-DLMM、Orca vs Meteora-DLMMの順に返す。
 
@@ -158,7 +178,7 @@ Meteora-DLMMの価格算出は、初期実装ではactive bin価格を使う。�
 
 次に`src/notifier.rs`を更新する。単一の`PriceSpread`ではなく、3件の`DexPrice`と複数の`PriceSpread`から通常通知Embedを作る関数を追加する。関数名の例は`build_price_spreads_embed_payload(prices: &[DexPrice], spreads: &[PriceSpread], bot_name: &str, environment: &str, embed_colors: &EmbedColors) -> serde_json::Value`である。異常通知は既存の`build_error_embed_payload`をMeteora-DLMMのDEX名とLbPairアドレスに対応させる。
 
-次に`src/runner.rs`を更新する。Meteora-DLMMのデコードに必要なアカウントを取得し、全DEX価格が揃った場合だけ`calculate_all_spreads`を呼ぶ。全spreadsをSQLiteへ保存し、通常通知Embedは監視サイクルごとに1件送る。価格取得失敗時は失敗したDEXの観測失敗と`monitor_errors`を保存し、`notify_on_error`がtrueなら異常通知Embedを送る。
+次に`src/runner.rs`を更新する。Meteora-DLMMではまずLbPairを取得してtoken X/Y mintアドレスをデコードし、そのmint accountも追加取得して`decode_price`へ渡す。Meteora-DLMMのデコードに必要なアカウントを取得し、全DEX価格が揃った場合だけ`calculate_all_spreads`を呼ぶ。全spreadsをSQLiteへ保存し、通常通知Embedは監視サイクルごとに1件送る。価格取得失敗時は失敗したDEXの観測失敗と`monitor_errors`を保存し、`notify_on_error`がtrueなら異常通知Embedを送る。
 
 最後に`config.example.toml`を更新する。Meteora-DLMMの設定例を含め、`lb_pair_address = "未定"`、`price_orientation = "usdc_per_sol"`、`auto_discovery = false`を明記する。`.env.example`がない場合は作成し、`HELIUS_RPC_URL`と`DISCORD_WEBHOOK_URL`だけを書く。
 
@@ -172,7 +192,7 @@ Meteora-DLMMの価格算出は、初期実装ではactive bin価格を使う。�
 
 ## 検証と受け入れ
 
-単体テストでは、設定読み込み、設定不備、`DexKind`の`meteora_dlmm` parse、Raydiumデコード、Orcaデコード、Meteora-DLMM LbPairデコード、active bin価格計算、スリッページ設定バリデーション、全組み合わせ価格差計算、Discord Embedペイロード生成、SQLite保存処理を検証する。
+単体テストでは、設定読み込み、設定不備、`DexKind`の`meteora_dlmm` parse、Raydiumデコード、Orcaデコード、Meteora-DLMM LbPairデコード、Meteora-DLMM token X/Y mint accountからの`mint_decimals`取得、active bin価格計算、スリッページ設定バリデーション、全組み合わせ価格差計算、Discord Embedペイロード生成、SQLite保存処理を検証する。
 
 `cargo test`を実行し、全テストが成功することを受け入れ条件にする。`cargo check`では未使用警告は許容してもよいが、型エラー、未完了式、未解決モジュール、未解決importは残さない。
 

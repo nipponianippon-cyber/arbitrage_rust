@@ -92,7 +92,7 @@ Botは30秒ごとにHelius HTTP RPCへリクエストし、設定ファイルで
 
 Botは取得したアカウントデータをDEXごとのプール形式に従ってデコードし、SOL/USDC価格を算出する。
 
-Meteora-DLMMでは、初期実装の監視価格は現在のactive bin価格とする。BotはLbPairアカウントから`active_id`、`bin_step`、トークンmint、手数料関連情報、プール状態を取得する。
+Meteora-DLMMでは、初期実装の監視価格は現在のactive bin価格とする。BotはLbPairアカウントから`active_id`、`bin_step`、トークンmint、手数料計算に必要な`parameters`と`vParameters`、プール状態を取得する。token X/YのdecimalはLbPair上の値として扱わず、LbPairから取得したtoken X/Y mintアドレスのmint accountを追加取得し、mint account dataから読み取る。
 
 スリッページ計算を行う場合、Botはactive bin周辺のBinArrayも取得し、公式SDKまたは既存crateのquoteロジックを利用して想定取引サイズに対する価格インパクトを算出する。
 
@@ -112,7 +112,10 @@ Botは各DEXのプール状態から以下を算出する。
 - 価格インパクト計算は実装可能な範囲で関数を分離する。
 - スリッページ計算を有効にする場合、設定ファイルで想定取引サイズを必須にする。
 - Meteora-DLMMではactive bin価格を基準価格とし、手数料とスリッページは公式SDKまたは既存crateのquote結果に基づいて算出する。
-- Meteora-DLMMの手数料は、実装上取得可能なbase fee、variable fee、その他必要な手数料を考慮する。
+- Meteora-DLMMのbase feeとvariable feeはLbPair上の`base_fee_bps`や`variable_fee_bps`という固定フィールドから直接読むのではなく、公式SDKのfee helperと同じ式で算出する。
+- Meteora-DLMMのbase fee raw rateは`baseFactor * binStep * 10 * 10^baseFeePowerFactor`で算出する。
+- Meteora-DLMMのvariable fee raw rateは、`variableFeeControl > 0`の場合に`ceil(variableFeeControl * (volatilityAccumulator * binStep)^2 / 100_000_000_000)`で算出し、`variableFeeControl == 0`の場合は0とする。
+- Meteora-DLMMのtotal fee raw rateは`base fee + variable fee`を`MAX_FEE_RATE`で上限クリップする。公式SDKの`FEE_PRECISION`は`1_000_000_000`なので、SQLiteへ保存するbps値は`raw_rate / 100_000`として扱う。
 - 将来自動売買を行う場合、想定取引サイズごとの見積もり計算を追加する。
 
 ### 5.4 価格差計算
@@ -195,8 +198,8 @@ Botは監視結果をSQLiteへ保存する。
 - 価格差率
 - Meteora-DLMMの`active_id`
 - Meteora-DLMMの`bin_step`
-- Meteora-DLMMのbase fee
-- Meteora-DLMMのvariable fee
+- Meteora-DLMMのbase fee bps
+- Meteora-DLMMのvariable fee bps
 - Meteora-DLMMのstatus
 - Meteora-DLMMのliquidity
 - RPCレスポンスの成否
@@ -331,6 +334,8 @@ MeteoraDlmmState
 - observed_at: DateTime
 ```
 
+`base_fee_bps`、`variable_fee_bps`、`total_fee_bps`は、LbPairから直接デコードしたu64値ではなく、Meteora公式SDK互換の手数料式で算出したraw fee rateをbpsへ変換した値を保存する。
+
 ## 10. 外部API
 
 ### 10.1 Helius RPC
@@ -359,6 +364,10 @@ Discordへの通知ペイロードは`embeds`を含むJSONとする。通常通�
 Meteora-DLMMのLbPair、BinArray、手数料、quote計算は公式SDKまたは既存crateの利用を許可する。
 
 BotはMeteora-DLMMのアカウントレイアウト、PDA導出、quote計算を自前実装する場合でも、公式SDKまたは既存crateの挙動と照合できる形でテストする。
+
+Meteora-DLMMのtoken decimalを自前実装で取得する場合は、LbPairからtoken X/Y mintアドレスを読み取り、`getMultipleAccounts`でmint accountを取得して、SPL TokenまたはToken-2022のmint account layoutに基づく`mint_decimals`相当の関数でdecimalを読む。
+
+Meteora-DLMMの手数料を自前実装で算出する場合は、Meteora公式SDKの`getBaseFee`、`getVariableFee`、`getTotalFee`、`FEE_PRECISION`、`MAX_FEE_RATE`と同じ挙動をテストで照合する。特にvariable feeは`volatilityAccumulator * binStep`を二乗し、除算は切り上げで行う。
 
 ## 11. 設定項目
 
@@ -541,6 +550,7 @@ Botは以下のエラーを分類して扱う。
 - Raydiumプールデコード
 - Orcaプールデコード
 - Meteora-DLMM LbPairデコード
+- Meteora-DLMM token X/Y mint accountからのdecimal取得
 - Meteora-DLMM BinArray取得結果の解釈
 - Meteora-DLMM active bin価格計算
 - Meteora-DLMM quote計算

@@ -1,9 +1,9 @@
 use crate::config::PoolConfig;
-use crate::dex::{read_pubkey, read_u64, require_sol_usdc, DexKind, DexPrice, PoolAccounts};
+use crate::dex::{DexKind, DexPrice, PoolAccounts, read_pubkey, read_u64, require_sol_usdc};
 use crate::errors::AppError;
 use chrono::Utc;
-use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
+use rust_decimal::prelude::FromPrimitive;
 
 const FEE_RATE_OFFSET: usize = 45;
 const SQRT_PRICE_OFFSET: usize = 65;
@@ -85,11 +85,15 @@ pub fn decode_price(config: &PoolConfig, accounts: &PoolAccounts) -> Result<DexP
 fn whirlpool_price(sqrt_price: u128) -> Result<Decimal, AppError> {
     let sqrt = sqrt_price as f64 / Q64;
     let price = sqrt * sqrt;
-    Decimal::from_f64(price)
-        .ok_or_else(|| AppError::Decode("failed to convert Whirlpool sqrt_price to decimal".to_string()))
+    Decimal::from_f64(price).ok_or_else(|| {
+        AppError::Decode("failed to convert Whirlpool sqrt_price to decimal".to_string())
+    })
 }
 
-pub fn vault_addresses_for_config(config: &PoolConfig, meta: &OrcaPoolMeta) -> Result<(String, String), AppError> {
+pub fn vault_addresses_for_config(
+    config: &PoolConfig,
+    meta: &OrcaPoolMeta,
+) -> Result<(String, String), AppError> {
     if meta.token_mint_a == config.base_mint && meta.token_mint_b == config.quote_mint {
         Ok((meta.token_vault_a.clone(), meta.token_vault_b.clone()))
     } else if meta.token_mint_a == config.quote_mint && meta.token_mint_b == config.base_mint {

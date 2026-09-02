@@ -1,5 +1,8 @@
 use crate::config::PoolConfig;
-use crate::dex::{decimal_amount, read_pubkey, read_u64, require_sol_usdc, token_amount, DexKind, DexPrice, PoolAccounts};
+use crate::dex::{
+    DexKind, DexPrice, PoolAccounts, decimal_amount, read_pubkey, read_u64, require_sol_usdc,
+    token_amount,
+};
 use crate::errors::AppError;
 use chrono::Utc;
 use rust_decimal::Decimal;
@@ -33,8 +36,16 @@ pub fn decode_pool_meta(data: &[u8]) -> Result<RaydiumPoolMeta, AppError> {
         quote_mint: read_pubkey(data, QUOTE_MINT_OFFSET, "Raydium quote mint")?,
         base_decimals: read_u64(data, BASE_DECIMAL_OFFSET, "Raydium base decimals")? as u8,
         quote_decimals: read_u64(data, QUOTE_DECIMAL_OFFSET, "Raydium quote decimals")? as u8,
-        swap_fee_numerator: read_u64(data, SWAP_FEE_NUMERATOR_OFFSET, "Raydium swap fee numerator")?,
-        swap_fee_denominator: read_u64(data, SWAP_FEE_DENOMINATOR_OFFSET, "Raydium swap fee denominator")?,
+        swap_fee_numerator: read_u64(
+            data,
+            SWAP_FEE_NUMERATOR_OFFSET,
+            "Raydium swap fee numerator",
+        )?,
+        swap_fee_denominator: read_u64(
+            data,
+            SWAP_FEE_DENOMINATOR_OFFSET,
+            "Raydium swap fee denominator",
+        )?,
     })
 }
 
@@ -65,7 +76,9 @@ pub fn decode_price(config: &PoolConfig, accounts: &PoolAccounts) -> Result<DexP
     let base = decimal_amount(token_amount(&base_vault.data)?, meta.base_decimals);
     let quote = decimal_amount(token_amount(&quote_vault.data)?, meta.quote_decimals);
     if base <= Decimal::ZERO {
-        return Err(AppError::Decode("Raydium base vault amount is zero".to_string()));
+        return Err(AppError::Decode(
+            "Raydium base vault amount is zero".to_string(),
+        ));
     }
 
     let price = quote / base;
@@ -84,7 +97,13 @@ pub fn decode_price(config: &PoolConfig, accounts: &PoolAccounts) -> Result<DexP
         fee_adjusted_price,
         slippage_adjusted_price: None,
         liquidity: Some(quote),
-        slot: Some(accounts.pool.slot.max(base_vault.slot).max(quote_vault.slot)),
+        slot: Some(
+            accounts
+                .pool
+                .slot
+                .max(base_vault.slot)
+                .max(quote_vault.slot),
+        ),
         observed_at: Utc::now(),
     })
 }

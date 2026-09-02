@@ -1,6 +1,6 @@
+pub mod meteora;
 pub mod orca;
 pub mod raydium;
-pub mod meteora;
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -84,31 +84,45 @@ pub struct PoolAccounts {
 }
 
 pub fn token_amount(data: &[u8]) -> Result<u64, crate::errors::AppError> {
-    let bytes = data
-        .get(64..72)
-        .ok_or_else(|| crate::errors::AppError::Decode("token account is shorter than SPL Token amount field".to_string()))?;
-    Ok(u64::from_le_bytes(bytes.try_into().expect("slice length checked")))
+    let bytes = data.get(64..72).ok_or_else(|| {
+        crate::errors::AppError::Decode(
+            "token account is shorter than SPL Token amount field".to_string(),
+        )
+    })?;
+    Ok(u64::from_le_bytes(
+        bytes.try_into().expect("slice length checked"),
+    ))
 }
 
 pub fn decimal_amount(amount: u64, decimals: u8) -> Decimal {
     Decimal::from_i128_with_scale(amount as i128, decimals as u32)
 }
 
-pub fn read_pubkey(data: &[u8], offset: usize, field: &str) -> Result<String, crate::errors::AppError> {
-    let bytes = data
-        .get(offset..offset + 32)
-        .ok_or_else(|| crate::errors::AppError::Decode(format!("pool account is missing {field}")))?;
+pub fn read_pubkey(
+    data: &[u8],
+    offset: usize,
+    field: &str,
+) -> Result<String, crate::errors::AppError> {
+    let bytes = data.get(offset..offset + 32).ok_or_else(|| {
+        crate::errors::AppError::Decode(format!("pool account is missing {field}"))
+    })?;
     Ok(bs58::encode(bytes).into_string())
 }
 
 pub fn read_u64(data: &[u8], offset: usize, field: &str) -> Result<u64, crate::errors::AppError> {
-    let bytes = data
-        .get(offset..offset + 8)
-        .ok_or_else(|| crate::errors::AppError::Decode(format!("pool account is missing {field}")))?;
-    Ok(u64::from_le_bytes(bytes.try_into().expect("slice length checked")))
+    let bytes = data.get(offset..offset + 8).ok_or_else(|| {
+        crate::errors::AppError::Decode(format!("pool account is missing {field}"))
+    })?;
+    Ok(u64::from_le_bytes(
+        bytes.try_into().expect("slice length checked"),
+    ))
 }
 
-pub fn require_sol_usdc(pair: &str, base_mint: &str, quote_mint: &str) -> Result<(), crate::errors::AppError> {
+pub fn require_sol_usdc(
+    pair: &str,
+    base_mint: &str,
+    quote_mint: &str,
+) -> Result<(), crate::errors::AppError> {
     const WSOL: &str = "So11111111111111111111111111111111111111112";
     const USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 

@@ -26,34 +26,40 @@ pub async fn run_once(
         .map(|account| (account.address.clone(), account))
         .collect();
 
-    let mut vault_addresses = Vec::new();
+    // 最初にpool本体を読み、DEXごとに追加取得が必要なvaultやmintを集める。
+    let mut dependent_addresses = Vec::new();
     for pool in &enabled {
-        let account = account_map
-            .get(&pool.account_address())
-            .ok_or_else(|| AppError::Rpc(format!("missing fetched pool account {}", pool.account_address())))?;
+        let account = account_map.get(&pool.account_address()).ok_or_else(|| {
+            AppError::Rpc(format!(
+                "missing fetched pool account {}",
+                pool.account_address()
+            ))
+        })?;
         match pool.dex {
             DexKind::Raydium => {
                 let meta = raydium::decode_pool_meta(&account.data)?;
-                vault_addresses.push(meta.base_vault);
-                vault_addresses.push(meta.quote_vault);
+                dependent_addresses.push(meta.base_vault);
+                dependent_addresses.push(meta.quote_vault);
             }
             DexKind::Orca => {
                 let meta = orca::decode_pool_meta(&account.data)?;
                 let (base_vault, quote_vault) = orca::vault_addresses_for_config(pool, &meta)?;
-                vault_addresses.push(base_vault);
-                vault_addresses.push(quote_vault);
+                dependent_addresses.push(base_vault);
+                dependent_addresses.push(quote_vault);
             }
             DexKind::MeteoraDlmm => {
-                let _meta = meteora::decode_pool_meta(&account.data)?;
+                let meta = meteora::decode_pool_meta(&account.data)?;
+                dependent_addresses.push(meta.token_x_mint);
+                dependent_addresses.push(meta.token_y_mint);
             }
         }
     }
-    vault_addresses.sort();
-    vault_addresses.dedup();
+    dependent_addresses.sort();
+    dependent_addresses.dedup();
 
-    let vault_accounts = rpc.get_multiple_accounts(&vault_addresses).await?;
+    let dependent_accounts = rpc.get_multiple_accounts(&dependent_addresses).await?;
     let mut all_accounts = account_map;
-    for account in vault_accounts {
+    for account in dependent_accounts {
         all_accounts.insert(account.address.clone(), account);
     }
 
@@ -154,7 +160,12 @@ fn decode_pool_price(
 ) -> Result<(DexPrice, Option<MeteoraDlmmState>), AppError> {
     let pool_account = accounts
         .get(&pool.account_address())
-        .ok_or_else(|| AppError::Rpc(format!("missing fetched pool account {}", pool.account_address())))?
+        .ok_or_else(|| {
+            AppError::Rpc(format!(
+                "missing fetched pool account {}",
+                pool.account_address()
+            ))
+        })?
         .clone();
 
     match pool.dex {
@@ -178,8 +189,21 @@ fn decode_pool_price(
             orca::decode_price(pool, &pool_accounts).map(|price| (price, None))
         }
         DexKind::MeteoraDlmm => {
+            let meta = meteora::decode_pool_meta(&pool_account.data)?;
             let pool_accounts = meteora::MeteoraPoolAccounts {
                 lb_pair: pool_account,
+                token_x_mint: accounts.get(&meta.token_x_mint).cloned().ok_or_else(|| {
+                    AppError::Rpc(format!(
+                        "missing fetched Meteora token X mint account {}",
+                        meta.token_x_mint
+                    ))
+                })?,
+                token_y_mint: accounts.get(&meta.token_y_mint).cloned().ok_or_else(|| {
+                    AppError::Rpc(format!(
+                        "missing fetched Meteora token Y mint account {}",
+                        meta.token_y_mint
+                    ))
+                })?,
             };
             meteora::decode_price(pool, &pool_accounts).map(|(price, state)| (price, Some(state)))
         }

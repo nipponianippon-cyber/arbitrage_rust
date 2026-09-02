@@ -2,7 +2,7 @@ use crate::config::{EmbedColors, NotificationConfig};
 use crate::dex::{DexKind, DexPrice};
 use crate::errors::{AppError, ErrorSeverity, MonitorErrorRecord};
 use crate::pricing::PriceSpread;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone)]
 pub struct DiscordNotifier {
@@ -73,7 +73,9 @@ impl DiscordNotifier {
             .json(&payload)
             .send()
             .await
-            .map_err(|error| AppError::Notification(format!("failed to send Discord webhook: {error}")))?;
+            .map_err(|error| {
+                AppError::Notification(format!("failed to send Discord webhook: {error}"))
+            })?;
         let status = response.status();
         if !status.is_success() {
             return Err(AppError::Notification(format!(
@@ -159,7 +161,11 @@ pub fn build_price_spreads_embed_payload(
     let mut fields = vec![
         field("Raydium", price_value(prices, DexKind::Raydium), true),
         field("Orca", price_value(prices, DexKind::Orca), true),
-        field("Meteora-DLMM", price_value(prices, DexKind::MeteoraDlmm), true),
+        field(
+            "Meteora-DLMM",
+            price_value(prices, DexKind::MeteoraDlmm),
+            true,
+        ),
     ];
 
     // Discordには詳細なMeteora内部状態を出さず、比較に必要な概要だけを載せる。

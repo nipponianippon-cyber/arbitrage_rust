@@ -53,17 +53,20 @@ impl RpcClient {
             .json(&body)
             .send()
             .await
-            .map_err(|error| AppError::Rpc(format!("failed to send getMultipleAccounts: {error}")))?;
+            .map_err(|error| {
+                AppError::Rpc(format!("failed to send getMultipleAccounts: {error}"))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
-            return Err(AppError::Rpc(format!("getMultipleAccounts returned HTTP {status}")));
+            return Err(AppError::Rpc(format!(
+                "getMultipleAccounts returned HTTP {status}"
+            )));
         }
 
-        let parsed: RpcResponse = response
-            .json()
-            .await
-            .map_err(|error| AppError::Rpc(format!("failed to parse getMultipleAccounts JSON: {error}")))?;
+        let parsed: RpcResponse = response.json().await.map_err(|error| {
+            AppError::Rpc(format!("failed to parse getMultipleAccounts JSON: {error}"))
+        })?;
 
         parse_get_multiple_accounts_response(addresses, parsed)
     }
@@ -113,7 +116,9 @@ fn decode_account(
         .ok_or_else(|| AppError::Rpc(format!("account {address} has no data field")))?;
     let data = base64::engine::general_purpose::STANDARD
         .decode(encoded)
-        .map_err(|error| AppError::Rpc(format!("failed to decode base64 for {address}: {error}")))?;
+        .map_err(|error| {
+            AppError::Rpc(format!("failed to decode base64 for {address}: {error}"))
+        })?;
 
     Ok(AccountData {
         address: address.to_string(),

@@ -163,7 +163,9 @@ pub fn validate_config(config: &AppConfig) -> Result<(), AppError> {
         ));
     }
     if config.database.path.trim().is_empty() {
-        return Err(AppError::Config("database.path must not be empty".to_string()));
+        return Err(AppError::Config(
+            "database.path must not be empty".to_string(),
+        ));
     }
     if config.pricing.price_orientation != "usdc_per_sol" {
         return Err(AppError::Config(
@@ -173,11 +175,10 @@ pub fn validate_config(config: &AppConfig) -> Result<(), AppError> {
     if config.pricing.consider_slippage {
         match config.pricing.trade_size_usdc {
             Some(size) if size > Decimal::ZERO => {}
-            _ => {
-                return Err(AppError::Config(
-                    "pricing.trade_size_usdc must be set to a positive value when slippage is enabled".to_string(),
-                ))
-            }
+            _ => return Err(AppError::Config(
+                "pricing.trade_size_usdc must be set to a positive value when slippage is enabled"
+                    .to_string(),
+            )),
         }
     }
     if !config.notification.discord_embed_enabled {
@@ -239,7 +240,8 @@ fn validate_pool(pool: &PoolConfig) -> Result<(), AppError> {
             }
             if pool.auto_discovery.unwrap_or(false) {
                 return Err(AppError::Config(
-                    "Meteora-DLMM auto_discovery must be false in the initial implementation".to_string(),
+                    "Meteora-DLMM auto_discovery must be false in the initial implementation"
+                        .to_string(),
                 ));
             }
         }
@@ -263,7 +265,9 @@ impl PoolConfig {
 fn validate_address(field: &str, value: &str) -> Result<(), AppError> {
     let trimmed = value.trim();
     if trimmed.is_empty() || trimmed == "未定" || trimmed.eq_ignore_ascii_case("placeholder") {
-        return Err(AppError::Config(format!("{field} must be set to a real Solana address")));
+        return Err(AppError::Config(format!(
+            "{field} must be set to a real Solana address"
+        )));
     }
     bs58::decode(trimmed)
         .into_vec()

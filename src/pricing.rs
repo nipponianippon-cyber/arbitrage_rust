@@ -38,12 +38,11 @@ pub fn calculate_spread(dex_a: DexPrice, dex_b: DexPrice) -> Result<PriceSpread,
     let absolute_spread = higher_price - lower_price;
     let spread_bps = absolute_spread / lower_price * Decimal::from(10_000u64);
     let comparison_direction = format!("buy on {lower_dex}, sell on {higher_dex}");
-    let fee_adjusted_reference_spread =
-        match (dex_a.fee_adjusted_price, dex_b.fee_adjusted_price) {
-            (Some(a), Some(b)) if a >= b => Some(a - b),
-            (Some(a), Some(b)) => Some(b - a),
-            _ => None,
-        };
+    let fee_adjusted_reference_spread = match (dex_a.fee_adjusted_price, dex_b.fee_adjusted_price) {
+        (Some(a), Some(b)) if a >= b => Some(a - b),
+        (Some(a), Some(b)) => Some(b - a),
+        _ => None,
+    };
 
     Ok(PriceSpread {
         pair: dex_a.pair.clone(),
@@ -102,7 +101,10 @@ pub fn fee_adjusted_sell_price(price: Decimal, fee_rate: Decimal) -> Result<Deci
     Ok(price * (Decimal::ONE - fee_rate))
 }
 
-pub fn price_impact_bps(trade_size_usdc: Option<Decimal>, liquidity_usdc: Option<Decimal>) -> Option<Decimal> {
+pub fn price_impact_bps(
+    trade_size_usdc: Option<Decimal>,
+    liquidity_usdc: Option<Decimal>,
+) -> Option<Decimal> {
     let trade_size = trade_size_usdc?;
     let liquidity = liquidity_usdc?;
     if trade_size <= Decimal::ZERO || liquidity <= Decimal::ZERO {
