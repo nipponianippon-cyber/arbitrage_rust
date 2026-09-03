@@ -9,11 +9,11 @@ use rust_decimal::prelude::FromPrimitive;
 /// LbPair上のoffset
 const BASE_FACTOR: usize = 8;
 const VARIABLE_FEE_CONTROL_OFFSET: usize = 16;
-const STATUS_OFFSET: usize = 32;
+const STATUS_OFFSET: usize = 82;
 const BASE_FEE_POWER_FACTOR: usize = 34;
 const VOLATILITY_ACCUMULATOR_OFFSET: usize = 40;
-const ACTIVE_ID_OFFSET: usize = 75;
-const BIN_STEP_OFFSET: usize = 79;
+const ACTIVE_ID_OFFSET: usize = 76;
+const BIN_STEP_OFFSET: usize = 80;
 const TOKEN_X_MINT_OFFSET: usize = 88;
 const TOKEN_Y_MINT_OFFSET: usize = 120;
 const RESERVE_X_OFFSET: usize = 152;
