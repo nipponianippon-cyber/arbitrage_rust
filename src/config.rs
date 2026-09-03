@@ -36,6 +36,10 @@ pub struct PricingConfig {
     pub trade_size_usdc: Option<Decimal>,
     #[serde(default = "default_price_orientation")]
     pub price_orientation: String,
+    #[serde(default = "default_meteora_dlmm_bin_array_count")]
+    pub meteora_dlmm_bin_array_count: usize,
+    #[serde(default = "default_meteora_dlmm_slippage_bps")]
+    pub meteora_dlmm_slippage_bps: u16,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -96,6 +100,14 @@ fn default_environment() -> String {
 
 fn default_price_orientation() -> String {
     "usdc_per_sol".to_string()
+}
+
+fn default_meteora_dlmm_bin_array_count() -> usize {
+    4
+}
+
+fn default_meteora_dlmm_slippage_bps() -> u16 {
+    50
 }
 
 fn default_normal_color() -> u32 {
@@ -180,6 +192,11 @@ pub fn validate_config(config: &AppConfig) -> Result<(), AppError> {
                     .to_string(),
             )),
         }
+    }
+    if config.pricing.meteora_dlmm_bin_array_count == 0 {
+        return Err(AppError::Config(
+            "pricing.meteora_dlmm_bin_array_count must be greater than zero".to_string(),
+        ));
     }
     if !config.notification.discord_embed_enabled {
         return Err(AppError::Config(

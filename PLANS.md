@@ -19,8 +19,8 @@
 - [x] DEX共通インターフェースとRaydium価格デコードを実装する。
 - [x] Orca価格デコードを実装する。
 - [x] Orca Whirlpool価格のmint decimal補正を実装する。
-- [ ] Meteora-DLMMのLbPair、mint account、必要に応じたBinArray取得と価格デコードを実装する。
-- [ ] 手数料、スリッページ、価格差計算を実装する。
+- [x] Meteora-DLMMのLbPair、mint account、必要に応じたBinArray取得と価格デコードを実装する。
+- [x] 手数料、スリッページ、価格差計算を実装する。
 - [x] SQLite保存を実装する。
 - [x] Discord Embed通知を実装する。
 - [x] 30秒周期の監視ループを実装する。
@@ -136,6 +136,8 @@ consider_dex_fee = true
 consider_slippage = true
 trade_size_usdc = 100.0
 price_orientation = "usdc_per_sol"
+meteora_dlmm_bin_array_count = 4
+meteora_dlmm_slippage_bps = 50
 
 [notification]
 discord_enabled = true
@@ -188,6 +190,8 @@ SPEC本文には具体的なmainnetプールアドレスを固定しない。開
 - Meteora-DLMMでは`lb_pair_address`が指定されていること
 - Meteora-DLMMの`auto_discovery`は初期実装ではfalseであること
 - `consider_slippage = true`の場合、想定取引サイズが正の値で指定されていること
+- `meteora_dlmm_bin_array_count`が設定されている場合、1以上の値であること
+- `meteora_dlmm_slippage_bps`が設定されている場合、0以上のbps値であること
 - SQLite DBパス、通知設定、エラー通知設定が読み込めること
 - `.env`から`HELIUS_RPC_URL`と`DISCORD_WEBHOOK_URL`が読み込めること
 
@@ -259,6 +263,36 @@ MeteoraDlmmState
 
 `base_fee_bps`、`variable_fee_bps`、`total_fee_bps`は、LbPairから直接デコードしたu64値ではなく、Meteora公式SDK互換の手数料式で算出したraw fee rateをbpsへ変換した値として保存する。
 
+```text
+MeteoraDlmmQuote
+- lb_pair_address: String
+- direction: MeteoraDlmmQuoteDirection
+- input_mint: String
+- output_mint: String
+- requested_input_amount: Decimal
+- requested_input_amount_raw: u64
+- consumed_input_amount: Option<Decimal>
+- consumed_input_amount_raw: Option<u64>
+- output_amount: Option<Decimal>
+- output_amount_raw: Option<u64>
+- fee_amount: Option<Decimal>
+- fee_amount_raw: Option<u64>
+- protocol_fee_amount: Option<Decimal>
+- protocol_fee_amount_raw: Option<u64>
+- price_impact_bps: Option<Decimal>
+- effective_price: Option<Decimal>
+- end_price: Option<Decimal>
+- bin_array_count: usize
+- bin_array_addresses: Vec<String>
+- partial_fill: bool
+- success: bool
+- error_message: Option<String>
+- slot: Option<u64>
+- observed_at: DateTime
+```
+
+`MeteoraDlmmQuoteDirection`は`UsdcToSol`と`SolToUsdc`を持つ。`pricing.trade_size_usdc`は両方向quoteで流用し、`USDC -> SOL`では入力USDC量としてそのまま使う。`SOL -> USDC`では同一観測サイクルのMeteora active bin価格から同等USDC価値のSOL量へ換算した値を入力量とする。
+
 ## RPC設計
 
 Helius HTTP RPCを利用する。価格監視では複数プールの状態をまとめて取得できるため、可能であれば`getMultipleAccounts`を優先する。初期実装で利用するRPCメソッド候補は次の通り。
@@ -318,7 +352,11 @@ SDK参照fixtureには、同じSDK実行内で取得または算出した`lb_pai
 
 active bin価格式の許容誤差は原則`0.01 bps`以内とする。既存の`f64`ベース実装がこの許容誤差を満たせない場合は、SDK fixtureに合わせて`Decimal`または高精度計算へ置き換える。
 
-スリッページ計算を行う場合は、active bin周辺のBinArrayも取得し、公式SDKまたは既存crateのquoteロジックを利用して想定取引サイズに対する価格インパクトを算出する。
+スリッページ計算を行う場合は、active bin周辺のBinArrayも取得し、Meteora公式SDKまたは公式Rust integration相当のquoteロジックを利用して想定取引サイズに対する価格インパクトを算出する。quote方向は`USDC -> SOL`と`SOL -> USDC`の両方向とする。
+
+BinArray取得では、Meteora公式SDKの`getBinArrayForSwap(swapForY, count)`または公式Rust integrationの`get_bin_array_pubkeys_for_swap`相当の挙動に合わせる。初期値は両方向それぞれ`count = 4`とし、設定の`pricing.meteora_dlmm_bin_array_count`で変更できるようにする。`swapForY = true`または`swap_for_y = true`はtoken Xからtoken Yへのswap、falseはtoken Yからtoken Xへのswapとして扱う。SOL/USDCのbase/quote方向とLbPairのtoken X/Y方向を照合し、`USDC -> SOL`と`SOL -> USDC`を正しいswap方向へ変換する。
+
+quote計算はactive bin価格取得とは独立した補助結果として扱う。Meteora-DLMMのactive bin価格、mint decimal、手数料計算に成功していれば、両方向quoteまたはいずれか一方向quoteが失敗してもそのサイクルのMeteora価格取得は成功扱いにする。quote失敗時は`slippage_adjusted_price = None`または成功した方向のみの値とし、失敗詳細はSQLiteのquote詳細テーブルと`monitor_errors`へ保存する。Discord通知は既存方針通りMeteora-DLMM固有詳細を表示しない。
 
 ## 価格計算
 
@@ -335,7 +373,11 @@ active bin価格式の許容誤差は原則`0.01 bps`以内とする。既存の
 - DEX手数料は設定値として持ち、比較用価格に反映する。
 - 価格インパクト計算は実装可能な範囲で関数を分離する。
 - スリッページ計算を有効にする場合、設定ファイルで想定取引サイズを必須にする。
-- Meteora-DLMMではactive bin価格を基準価格とし、手数料とスリッページは公式SDKまたは既存crateのquote結果に基づいて算出する。
+- Meteora-DLMMではactive bin価格を基準価格とし、手数料とスリッページは公式SDKまたは公式Rust integration相当のquote結果に基づいて算出する。
+- Meteora-DLMMのquoteは`USDC -> SOL`と`SOL -> USDC`の両方向で計算する。
+- Meteora-DLMMのquote入力サイズは既存の`pricing.trade_size_usdc`を流用する。`SOL -> USDC`では、active bin価格で同等USDC価値になるSOL量を算出して入力量に変換する。
+- Meteora-DLMMのquoteでSDKへ渡すallowed slippageは`pricing.meteora_dlmm_slippage_bps`を使い、初期値は50bpsとする。
+- Meteora-DLMMのquote失敗はactive bin価格取得失敗とは分離し、価格監視、価格差計算、Discord通知は継続する。失敗理由と取得できた部分結果はSQLiteへ保存する。
 - 将来自動売買を行う場合、想定取引サイズごとの見積もり計算を追加する。
 
 Meteora-DLMMの手数料計算は次のSPEC指定に従う。
@@ -375,6 +417,7 @@ SQLiteには少なくとも次のテーブルを用意する。
 - `price_observations`
 - `price_spreads`
 - `meteora_dlmm_states`
+- `meteora_dlmm_quotes`
 - `monitor_errors`
 
 `price_observations`にはDEXごとの価格取得結果を保存する。保存対象は少なくとも次を含む。
@@ -412,6 +455,35 @@ SQLiteには少なくとも次のテーブルを用意する。
 - Meteora-DLMMのliquidity
 - RPC slot
 - 観測時刻
+
+`meteora_dlmm_quotes`にはMeteora-DLMMの両方向quote詳細を保存する。保存対象は少なくとも次を含む。
+
+- 観測時刻
+- LbPairアドレス
+- quote方向
+- input mint
+- output mint
+- requested input amount
+- requested input amount raw
+- consumed input amount
+- consumed input amount raw
+- output amount
+- output amount raw
+- fee amount
+- fee amount raw
+- protocol fee amount
+- protocol fee amount raw
+- price impact bps
+- effective price
+- end price
+- 取得したBinArray数
+- 使用したBinArrayアドレス
+- partial fill有無
+- quote成功有無
+- quote失敗理由
+- RPC slot
+
+raw amountはSPL token amountの`u64`値なので、SQLite上では符号付きINTEGERの上限に依存しないようTEXTとして保存する。
 
 `monitor_errors`にはRPC、デコード、価格計算、DB保存、Discord通知のエラーを保存する。
 
@@ -481,6 +553,7 @@ Discordのフィールド数、文字数、ペイロードサイズの制限を�
 - 一時的なRPC失敗はリトライ対象とする。
 - 同一コンポーネントで連続エラーが発生した場合はDiscordへ異常通知する。
 - Raydium、Orca、Meteora-DLMMのいずれか1つでも価格取得に失敗した場合、そのサイクル全体を失敗扱いとし、価格差計算をスキップする。
+- Meteora-DLMMのactive bin価格取得に成功し、quoteだけが失敗した場合は、そのサイクルの価格取得は成功扱いにする。quote失敗は`meteora_dlmm_quotes`と`monitor_errors`へ保存し、価格差計算と通常Discord通知は継続する。
 - エラーは可能な限りSQLiteへ保存する。
 - Discord通知失敗時は標準エラーへ出力する。
 
@@ -506,11 +579,11 @@ fixture対象には、pool本体だけでなく、価格デコードに必要な
 - Raydium: base/quote vault
 - Orca: Whirlpool本体、token A/B mint account、必要なvault確認用アカウント
 - Meteora-DLMM: LbPairとtoken X/Y mint account
-- スリッページ検証を行う場合: active bin周辺のBinArray
+- スリッページ検証を行う場合: 両方向quoteに必要なactive bin周辺のBinArray。初期値は各方向`count = 4`で、`pricing.meteora_dlmm_bin_array_count`に従う。
 
 fixtureファイルはGit管理しない。保存先は`tests/fixtures/local/`などのローカル生成ディレクトリを想定し、`.gitignore`で除外する。fixtureの更新は手動で行う。自動更新、定期更新、CI上でのmainnet RPC取得は初期実装に含めない。
 
-Meteora-DLMM active bin公式SDK照合用には、RPCレスポンスfixtureとは別にSDK参照fixtureを用意する。SDK参照fixtureは複数のMeteora-DLMM poolを対象にし、`bin_step`、`active_id`、token X/Y方向、decimal差が異なるケースを含める。fixture生成は明示実行だけで行い、通常の`cargo test`やCIではSDK、Node、ネットワークを要求しない。
+Meteora-DLMM公式SDK照合用には、RPCレスポンスfixtureとは別にSDK参照fixtureを用意する。SDK参照fixtureは複数のMeteora-DLMM poolを対象にし、`bin_step`、`active_id`、token X/Y方向、decimal差、両方向quoteが異なるケースを含める。fixture生成は明示実行だけで行い、通常の`cargo test`やCIではSDK、Node、ネットワークを要求しない。
 
 ## マイルストーン
 
@@ -555,6 +628,8 @@ Raydium、Orca Whirlpool、Meteora-DLMMのDEX別デコーダを実装する。Or
 
 - Raydium vs Orca、Raydium vs Meteora-DLMM、Orca vs Meteora-DLMMの3比較を算出できる。
 - 絶対価格差、価格差率、高いDEX、安いDEX、手数料考慮後の参考差分を得られる。
+- Meteora-DLMMでは`USDC -> SOL`と`SOL -> USDC`の両方向quoteを計算し、想定取引サイズに対する実効価格と価格インパクトを保存用データとして得られる。
+- Meteora-DLMMのquoteだけが失敗しても、active bin価格が取得できていれば価格差計算を継続できる。
 - 裁定判定しきい値に依存せず、毎サイクル通知対象を作れる。
 
 ### マイルストーン5: SQLite保存
@@ -566,6 +641,7 @@ Raydium、Orca Whirlpool、Meteora-DLMMのDEX別デコーダを実装する。Or
 - `price_observations`へDEXごとの価格取得結果を保存できる。
 - `price_spreads`へ全組み合わせ価格差を保存できる。
 - `meteora_dlmm_states`へ`active_id`、`bin_step`、手数料、status、liquidityを保存できる。
+- `meteora_dlmm_quotes`へ両方向quoteの入力額、出力量、手数料、価格インパクト、使用BinArray、partial fill、成功可否、失敗理由を保存できる。
 - `monitor_errors`へRPC、デコード、価格計算、DB保存、Discord通知のエラーを保存できる。
 
 ### マイルストーン6: Discord Embed通知
@@ -588,6 +664,7 @@ Raydium、Orca Whirlpool、Meteora-DLMMのDEX別デコーダを実装する。Or
 - 30秒ごとにRaydium、Orca、Meteora-DLMMの価格を取得する。
 - 3 DEXすべての価格取得に成功した場合だけ価格差を計算する。
 - いずれか1 DEXでも価格取得に失敗した場合、そのサイクル全体を失敗扱いにして価格差計算をスキップする。
+- Meteora-DLMMのquoteのみが失敗した場合は、価格取得失敗として扱わず、quote失敗詳細を保存して価格差計算を継続する。
 - エラーをSQLiteへ保存し、必要に応じてDiscordへ異常通知する。
 
 ### マイルストーン8: fixture取得とテスト
@@ -597,22 +674,24 @@ Raydium、Orca Whirlpool、Meteora-DLMMのDEX別デコーダを実装する。Or
 完了条件:
 
 - Helius HTTP RPCから対象poolと依存アカウントのJSON fixtureを手動生成できる。
+- Meteora-DLMMのfixture取得では、LbPair、token X/Y mint account、両方向quoteに必要なBinArrayを保存できる。
 - 通常の`cargo test`はネットワークなしで成功する。
 - 保存済みfixtureを使い、RPCへ接続せずにDEXデコードを検証できる。
 - Helius RPCを実際に叩くテストは通常の`cargo test`から分離し、明示指定時だけ実行される。
 
-### マイルストーン9: Meteora-DLMM active bin公式SDK照合
+### マイルストーン9: Meteora-DLMM公式SDK照合
 
-Meteora公式TypeScript SDKを明示実行して、Meteora-DLMM active bin価格式の参照fixtureを生成する。Rust実装は保存済みSDK参照fixtureを読み込み、`active_id`、`bin_step`、token X/Y decimalsから算出した価格がSDKの正規化済み期待価格と一致することを検証する。
+Meteora公式TypeScript SDKを明示実行して、Meteora-DLMM active bin価格式と両方向quoteの参照fixtureを生成する。Rust実装は保存済みSDK参照fixtureを読み込み、`active_id`、`bin_step`、token X/Y decimalsから算出した価格がSDKの正規化済み期待価格と一致すること、さらに同一入力サイズ、同一方向、同一BinArray条件のquote結果がSDK出力と一致することを検証する。
 
 完了条件:
 
-- SDK fixture生成スクリプトを明示実行し、複数のMeteora-DLMM poolについてactive bin参照値をJSON保存できる。
-- SDK参照fixtureには、`lb_pair_address`、`active_id`、`bin_step`、token X/Y mint、token X/Y decimals、SDK price per lamport、SDK UI価格、`USDC per SOL`へ正規化した期待価格、SDKパッケージ名、SDKバージョン、生成時刻を含める。
+- SDK fixture生成スクリプトを明示実行し、複数のMeteora-DLMM poolについてactive bin参照値と両方向quote参照値をJSON保存できる。
+- SDK参照fixtureには、`lb_pair_address`、`active_id`、`bin_step`、token X/Y mint、token X/Y decimals、SDK price per lamport、SDK UI価格、`USDC per SOL`へ正規化した期待価格、両方向quoteの入力額、出力量、消費入力額、fee、protocol fee、price impact、end price、使用BinArray、partial fill有無、SDKパッケージ名、SDKバージョン、生成時刻を含める。
 - 通常の`cargo test`ではSDK参照fixtureを読み込むだけで、Node/TypeScript、Meteora公式SDK、ネットワークを要求しない。
 - Rustのactive bin価格式とSDK期待価格の乖離が原則`0.01 bps`以内である。
+- RustのMeteora-DLMM quote結果はSDK参照fixtureのquote結果と、raw amount単位または明示した許容誤差以内で一致する。
 - 既存の`f64`ベース実装が許容誤差を満たせない場合、`Decimal`または高精度計算へ置き換える作業を実施対象にする。
-- このマイルストーンの照合対象はactive bin価格式のみとし、LbPair decode offset、手数料式、BinArray quote、スリッページ計算は対象外とする。
+- quote照合は、Meteora公式SDKまたは公式Rust integration相当のBinArray取得順、swap方向、partial fill設定、slippage bps設定を固定して行う。
 
 ## テスト計画
 
@@ -630,6 +709,10 @@ Meteora公式TypeScript SDKを明示実行して、Meteora-DLMM active bin価格
 - Meteora-DLMM active bin価格計算
 - Meteora-DLMM active bin価格計算とSDK参照fixtureの照合
 - Meteora-DLMM quote計算
+- Meteora-DLMM quote計算とSDK参照fixtureの照合
+- Meteora-DLMMの`USDC -> SOL` quote
+- Meteora-DLMMの`SOL -> USDC` quote
+- Meteora-DLMMのquote失敗時にactive bin価格監視を継続する分岐
 - 価格計算
 - 手数料考慮後価格の計算
 - スリッページ計算の有効・無効切り替え
@@ -650,7 +733,7 @@ Meteora公式TypeScript SDKを明示実行して、Meteora-DLMM active bin価格
 - 連続エラー時の異常通知
 - 通常の結合テストがネットワークを使わず、fixtureまたはモックRPCレスポンスで実行できること
 - 公式SDKまたは既存crateとの照合テストを通常のオフラインテストと分離できること
-- Meteora-DLMM active bin SDK参照fixtureの再生成は明示実行に分離されていること
+- Meteora-DLMM active binおよびquote SDK参照fixtureの再生成は明示実行に分離されていること
 
 手動確認では次を検証する。
 
@@ -660,9 +743,10 @@ Meteora公式TypeScript SDKを明示実行して、Meteora-DLMM active bin価格
 - Discord通知がEmbed形式で表示されること
 - SQLiteに価格観測結果と価格差が保存されること
 - SQLiteにMeteora-DLMM固有状態が保存されること
+- SQLiteにMeteora-DLMMの両方向quote詳細が保存されること
 - RPC障害や不正設定時に異常通知されること
 - 開発用fixture取得スクリプトを手動実行し、Helius RPCから対象poolと依存アカウントのJSON fixtureを生成できること
-- Meteora-DLMM active bin SDK参照fixture生成スクリプトを手動実行し、複数poolの期待価格JSONを生成できること
+- Meteora-DLMM active binおよびquote SDK参照fixture生成スクリプトを手動実行し、複数poolの期待価格とquote JSONを生成できること
 - 生成済みfixtureを使ったオフラインテストで、Raydium、Orca、Meteora-DLMMのデコード結果が再現できること
 
 fixture検証の受け入れ基準は次の通り。
@@ -672,6 +756,7 @@ fixture検証の受け入れ基準は次の通り。
 - 出力価格が`USDC per SOL`で正の値である。
 - 外部照合値または公式SDK出力との乖離が設定した許容bps以内である。
 - Meteora-DLMM active bin価格式は、SDK参照fixtureの正規化済み期待価格と`0.01 bps`以内で一致する。
+- Meteora-DLMM quoteは、SDK参照fixtureの両方向quote結果とraw amount単位または明示した許容誤差以内で一致する。
 - Orca Whirlpool、Meteora-DLMMのdecimal補正と価格方向の反転が期待通りである。
 - Raydium、Orca Whirlpool、Meteora-DLMMそれぞれのmint、vault、LbPair、token X/Y mintがfixture期待値と一致する。
 - Orca Whirlpoolの価格式は公式SDKまたは公式実装の`sqrt_price_to_price`相当の結果と、設定した許容bps以内で一致する。
@@ -692,9 +777,11 @@ fixture検証の受け入れ基準は次の通り。
 - 各監視サイクルでDiscord Embedの価格差通知を送信できる。
 - 異常発生時にエラー通知Embedを送信できる。
 - SQLiteへ価格観測結果、価格差、Meteora-DLMM固有状態、エラーを保存できる。
+- SQLiteへMeteora-DLMMの両方向quote詳細、使用BinArray、partial fill、quote失敗理由を保存できる。
 - 通常の`cargo test`がネットワークなしで成功する。
 - fixture取得補助を手動実行でき、fixture本体はGit管理されない。
 - Meteora-DLMM active bin価格式が、複数poolのSDK参照fixtureに対して原則`0.01 bps`以内で一致する。
+- Meteora-DLMM quote計算が、複数poolのSDK参照fixtureに対してraw amount単位または明示した許容誤差以内で一致する。
 
 ## 実装メモ
 
@@ -708,6 +795,8 @@ fixture検証の受け入れ基準は次の通り。
 - 2026-09-03: Orca Whirlpoolの価格デコードを更新し、Whirlpool本体から読んだtoken A/B mintのmint accountを追加取得してdecimal補正するようにした。価格計算は`f64`ではなく`Decimal`で`(sqrt_price / 2^64)^2 * 10^(decimals_a - decimals_b)`を計算し、token A/Bがbase/quoteと逆向きの場合は反転する。`do-plan`スキルの制約により、今回もimport、テスト、ビルド、プログラム実行による検証は行っていない。
 - 2026-09-03: Meteora-DLMM active bin価格式は、Meteora公式TypeScript SDKを明示実行して生成した複数poolのSDK参照fixtureで照合する方針にした。通常の`cargo test`は保存済みfixtureのみを読み、SDK、Node、ネットワークを要求しない。許容誤差は原則`0.01 bps`以内とし、既存の`f64`ベース実装で満たせない場合は`Decimal`または高精度計算へ置き換える。
 - 2026-09-03: `tools/meteora-dlmm-sdk-fixture/`にMeteora公式TypeScript SDKのactive bin参照fixture生成ヘルパーを追加し、`src/dex/meteora/meteora_amm.rs`に生成済みfixtureが存在する場合だけ`0.01 bps`以内で照合するオフラインテストを追加した。実fixture生成、SDK install、`cargo test`は`do-plan`スキルの制約により実行していないため、進捗チェックは未完了のままとする。
+- 2026-09-03: 次のMeteora-DLMM実装方針を確定した。quote方向は`USDC -> SOL`と`SOL -> USDC`の両方向、想定取引サイズは既存の`pricing.trade_size_usdc`を流用、quoteロジックはMeteora公式SDKまたは公式Rust integration相当に合わせる。BinArrayは両方向それぞれ公式helper相当で最大`count = 4`を初期値として取得し、設定で変更可能にする。quoteのみ失敗した場合はactive bin価格による監視と価格差計算を継続し、詳細はSQLiteへ保存する。SDK参照fixtureはactive bin価格だけでなく両方向quote照合にも広げる。
+- 2026-09-03: `pricing.meteora_dlmm_bin_array_count`と`pricing.meteora_dlmm_slippage_bps`を追加し、Meteora-DLMMの両方向quoteを公式TypeScript SDKヘルパーで取得する実装を追加した。Rust側はSDK helperのJSONを`MeteoraDlmmQuote`へ変換し、quote成功時は`USDC -> SOL`の実効価格を`slippage_adjusted_price`へ反映する。quote失敗時はMeteora価格取得を失敗扱いにせず、`meteora_dlmm_quotes`と`monitor_errors`へ記録する。`fetch_fixtures`は公式SDK helperが返したBinArrayアドレスをHelius fixture取得対象へ追加する。do-planスキルの制約により、import、テスト、ビルド、プログラム実行による検証は行っていない。
 
 ## 根拠メモ
 
@@ -717,6 +806,8 @@ fixture検証の受け入れ基準は次の通り。
 - Orca公式Whirlpool Parametersでは、Whirlpool program ID、config address、fee tierが公開されている。根拠: https://docs.orca.so/developers/architecture/whirlpool-parameters
 - Orca公式実装または公式SDKの価格変換関数に合わせ、Whirlpoolの`sqrt_price`、token A decimal、token B decimalを入力にした価格変換を照合対象とする。根拠: https://github.com/orca-so/whirlpools
 - Meteora公式TypeScript SDKには、active bin取得の`getActiveBin()`、price per lamportからUI価格へ変換する`fromPricePerLamport()`、bin IDから価格を得る`getPriceOfBinByBinId`が用意されている。Meteora-DLMM active bin価格式の参照値は、これらのSDK出力をfixture化して照合する。根拠: https://github.com/MeteoraAg/docs/blob/main/developer-guides/dlmm/typescript-sdk/reference.mdx
+- Meteora公式TypeScript SDKでは、swap前に`getBinArrayForSwap(swapForY, count)`でswap方向のBinArrayを取得し、`swapQuote(inAmount, swapForY, allowedSlippage, binArrays, ...)`でquoteを計算する。`swapForY = true`はtoken Xからtoken Yへのswapを表す。根拠: https://github.com/MeteoraAg/docs/blob/main/developer-guides/dlmm/typescript-sdk/reference.mdx
+- Meteora公式Rust integrationでは、`get_bin_array_pubkeys_for_swap`がLbPair、必要に応じたbitmap extension、swap方向、countからswap用BinArray pubkeyを解決する。`swap_for_y = true`はtoken Xからtoken Y、falseはtoken Yからtoken Xを表す。根拠: https://github.com/MeteoraAg/docs/blob/main/developer-guides/dlmm/rust-integration/library.mdx
 
 ## 未決事項
 
@@ -727,11 +818,9 @@ fixture検証の受け入れ基準は次の通り。
 - `config.example.toml`に記載するMeteora-DLMM SOL/USDCの具体的なLbPairアドレス
 - 裁定判定しきい値
 - 想定取引サイズ
-- スリッページ計算に使う想定取引サイズ
 - Raydiumで対象とするプール種別
 - Meteora-DLMM active bin SDK参照fixtureに含める具体的な複数pool
 - Meteora-DLMMの自動探索方法
-- SQLiteスキーマの詳細
 - Discord Embed通知の最終デザイン
 - ローカル実行時の起動方法
 
@@ -741,4 +830,4 @@ SQLiteスキーマ初期化は既存データを消さない方法で行う。fi
 
 設定不備は起動時に検出してBotを停止する。一時的なRPC失敗はリトライ対象とし、同一コンポーネントで連続エラーが発生した場合はDiscordへ異常通知する。Discord通知失敗時はSQLiteへエラーを記録し、連続失敗時は標準出力または標準エラーにも出力する。
 
-Meteora-DLMMのactive bin価格式は、Meteora公式TypeScript SDKを明示実行して生成したSDK参照fixtureと通常のオフラインテストで照合する。Meteora-DLMMのアカウントレイアウト、PDA導出、quote計算を自前実装する場合は、別途、公式SDKまたは既存crateの挙動と照合できる形でテストする。Meteora-DLMM active bin価格式およびOrca Whirlpoolの価格式・手数料式は、公式SDKまたは公式実装に準じる既存crateとの照合を初期実装の受け入れ条件とする。
+Meteora-DLMMのactive bin価格式とquote計算は、Meteora公式TypeScript SDKを明示実行して生成したSDK参照fixtureと通常のオフラインテストで照合する。Meteora-DLMMのアカウントレイアウト、PDA導出、quote計算を自前実装する場合も、公式SDKまたは公式Rust integration相当の挙動と照合できる形でテストする。Meteora-DLMM active bin価格式、quote計算、Orca Whirlpoolの価格式・手数料式は、公式SDKまたは公式実装に準じる既存crateとの照合を初期実装の受け入れ条件とする。

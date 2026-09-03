@@ -1,5 +1,5 @@
 use crate::dex::DexPrice;
-use crate::dex::meteora::MeteoraDlmmState;
+use crate::dex::meteora::{MeteoraDlmmQuote, MeteoraDlmmState};
 use crate::errors::{AppError, MonitorErrorRecord};
 use crate::pricing::PriceSpread;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -97,6 +97,34 @@ impl Storage {
                 total_fee_bps TEXT,
                 status TEXT,
                 liquidity TEXT,
+                slot INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS meteora_dlmm_quotes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observed_at TEXT NOT NULL,
+                lb_pair_address TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                input_mint TEXT NOT NULL,
+                output_mint TEXT NOT NULL,
+                requested_input_amount TEXT NOT NULL,
+                requested_input_amount_raw TEXT NOT NULL,
+                consumed_input_amount TEXT,
+                consumed_input_amount_raw TEXT,
+                output_amount TEXT,
+                output_amount_raw TEXT,
+                fee_amount TEXT,
+                fee_amount_raw TEXT,
+                protocol_fee_amount TEXT,
+                protocol_fee_amount_raw TEXT,
+                price_impact_bps TEXT,
+                effective_price TEXT,
+                end_price TEXT,
+                bin_array_count INTEGER NOT NULL,
+                bin_array_addresses TEXT NOT NULL,
+                partial_fill INTEGER NOT NULL,
+                success INTEGER NOT NULL,
+                error_message TEXT,
                 slot INTEGER
             );
             ",
@@ -259,6 +287,55 @@ impl Storage {
                 state.status.as_deref(),
                 state.liquidity.map(|value| value.to_string()),
                 state.slot,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_meteora_dlmm_quote(&self, quote: &MeteoraDlmmQuote) -> Result<(), AppError> {
+        let bin_array_addresses = serde_json::to_string(&quote.bin_array_addresses)?;
+        self.conn.execute(
+            "
+            INSERT INTO meteora_dlmm_quotes (
+                observed_at, lb_pair_address, direction, input_mint, output_mint,
+                requested_input_amount, requested_input_amount_raw,
+                consumed_input_amount, consumed_input_amount_raw,
+                output_amount, output_amount_raw, fee_amount, fee_amount_raw,
+                protocol_fee_amount, protocol_fee_amount_raw, price_impact_bps,
+                effective_price, end_price, bin_array_count, bin_array_addresses,
+                partial_fill, success, error_message, slot
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24
+            )
+            ",
+            params![
+                quote.observed_at.to_rfc3339(),
+                quote.lb_pair_address.as_str(),
+                quote.direction.as_str(),
+                quote.input_mint.as_str(),
+                quote.output_mint.as_str(),
+                quote.requested_input_amount.to_string(),
+                quote.requested_input_amount_raw.to_string(),
+                quote.consumed_input_amount.map(|value| value.to_string()),
+                quote.consumed_input_amount_raw.map(|value| value.to_string()),
+                quote.output_amount.map(|value| value.to_string()),
+                quote.output_amount_raw.map(|value| value.to_string()),
+                quote.fee_amount.map(|value| value.to_string()),
+                quote.fee_amount_raw.map(|value| value.to_string()),
+                quote.protocol_fee_amount.map(|value| value.to_string()),
+                quote
+                    .protocol_fee_amount_raw
+                    .map(|value| value.to_string()),
+                quote.price_impact_bps.map(|value| value.to_string()),
+                quote.effective_price.map(|value| value.to_string()),
+                quote.end_price.map(|value| value.to_string()),
+                quote.bin_array_count as i64,
+                bin_array_addresses,
+                quote.partial_fill as i32,
+                quote.success as i32,
+                quote.error_message.as_deref(),
+                quote.slot,
             ],
         )?;
         Ok(())

@@ -1,6 +1,6 @@
 use crate::config::{AppConfig, PoolConfig};
 use crate::dex::meteora;
-use crate::dex::meteora::MeteoraDlmmState;
+use crate::dex::meteora::{MeteoraDlmmQuoteDirection, MeteoraDlmmState};
 use crate::dex::orca;
 use crate::dex::raydium;
 use crate::dex::{DexKind, DexPrice, PoolAccounts};
@@ -79,11 +79,43 @@ pub async fn run_once(
                     continue;
                 }
                 if config.pricing.consider_slippage {
-                    price.slippage_adjusted_price = slippage_adjusted_buy_price(
-                        price.price,
-                        config.pricing.trade_size_usdc,
-                        price.liquidity,
-                    );
+                    if pool.dex == DexKind::MeteoraDlmm {
+                        let quotes = meteora::quote_both_directions_with_official_sdk(
+                            pool,
+                            &config.helius_rpc_url,
+                            config.pricing.trade_size_usdc,
+                            config.pricing.meteora_dlmm_bin_array_count,
+                            config.pricing.meteora_dlmm_slippage_bps,
+                        );
+                        for quote in &quotes {
+                            storage.insert_meteora_dlmm_quote(quote)?;
+                            if !quote.success {
+                                let record = MonitorErrorRecord::new(
+                                    "meteora_dlmm_quote",
+                                    ErrorSeverity::Warning,
+                                    quote.error_message.clone().unwrap_or_else(|| {
+                                        "Meteora-DLMM quote failed".to_string()
+                                    }),
+                                    None,
+                                )
+                                .with_pool_context(pool.dex, pool.account_address());
+                                storage.insert_monitor_error(&record)?;
+                            }
+                        }
+                        price.slippage_adjusted_price = quotes
+                            .iter()
+                            .find(|quote| {
+                                quote.direction == MeteoraDlmmQuoteDirection::UsdcToSol
+                                    && quote.success
+                            })
+                            .and_then(|quote| quote.effective_price);
+                    } else {
+                        price.slippage_adjusted_price = slippage_adjusted_buy_price(
+                            price.price,
+                            config.pricing.trade_size_usdc,
+                            price.liquidity,
+                        );
+                    }
                 }
                 storage.insert_price_observation(&price)?;
                 if let Some(state) = meteora_state {

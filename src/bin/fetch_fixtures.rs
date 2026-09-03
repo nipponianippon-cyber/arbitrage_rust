@@ -1,5 +1,6 @@
-use arbitrage_rust::config::{PoolConfig, load_config};
+use arbitrage_rust::config::{AppConfig, PoolConfig, load_config};
 use arbitrage_rust::dex::meteora;
+use arbitrage_rust::dex::meteora::MeteoraDlmmQuoteDirection;
 use arbitrage_rust::dex::orca;
 use arbitrage_rust::dex::raydium;
 use arbitrage_rust::dex::DexKind;
@@ -74,7 +75,13 @@ async fn run() -> Result<(), AppError> {
         let account = account_map.get(&pool_address).ok_or_else(|| {
             AppError::Rpc(format!("missing fetched pool account {pool_address}"))
         })?;
-        collect_dependent_targets(pool, account, &mut targets, &mut dependent_addresses)?;
+        collect_dependent_targets(
+            &config,
+            pool,
+            account,
+            &mut targets,
+            &mut dependent_addresses,
+        )?;
     }
 
     dependent_addresses.sort();
@@ -99,6 +106,7 @@ async fn run() -> Result<(), AppError> {
 }
 
 fn collect_dependent_targets(
+    config: &AppConfig,
     pool: &PoolConfig,
     account: &AccountData,
     targets: &mut Vec<FixtureTarget>,
@@ -146,6 +154,25 @@ fn collect_dependent_targets(
                 meta.token_y_mint,
                 "token_y_mint",
             );
+            if config.pricing.consider_slippage {
+                // quote用BinArrayのPDA解決は公式SDKヘルパーに任せ、取得自体は既存RPC経路にそろえる。
+                let quotes = meteora::quote_both_directions_with_official_sdk(
+                    pool,
+                    &config.helius_rpc_url,
+                    config.pricing.trade_size_usdc,
+                    config.pricing.meteora_dlmm_bin_array_count,
+                    config.pricing.meteora_dlmm_slippage_bps,
+                );
+                for quote in quotes {
+                    let role = match quote.direction {
+                        MeteoraDlmmQuoteDirection::UsdcToSol => "bin_array_usdc_to_sol",
+                        MeteoraDlmmQuoteDirection::SolToUsdc => "bin_array_sol_to_usdc",
+                    };
+                    for address in quote.bin_array_addresses {
+                        push_dependency(pool, targets, dependent_addresses, address, role);
+                    }
+                }
+            }
         }
     }
     Ok(())

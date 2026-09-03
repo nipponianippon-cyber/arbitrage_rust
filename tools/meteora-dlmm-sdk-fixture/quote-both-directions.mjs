@@ -1,33 +1,17 @@
 import { createRequire } from "node:module";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import Decimal from "decimal.js";
 import DLMM from "@meteora-ag/dlmm";
 import { BN } from "@coral-xyz/anchor";
 import { Connection, PublicKey } from "@solana/web3.js";
 
 const require = createRequire(import.meta.url);
-const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-
-const DEFAULT_OUTPUT =
-  "../../tests/fixtures/meteora_dlmm_active_bin_sdk.generated.json";
 const DEFAULT_CLUSTER = "mainnet-beta";
 const DEFAULT_BASE_MINT = "So11111111111111111111111111111111111111112";
 const DEFAULT_QUOTE_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
-function readPackageVersion(packageName) {
-  try {
-    return require(`${packageName}/package.json`).version ?? "unknown";
-  } catch {
-    return "unknown";
-  }
-}
-
 function parseArgs(argv) {
   const options = {
-    pools: [],
-    output: DEFAULT_OUTPUT,
+    pool: undefined,
     cluster: process.env.METEORA_CLUSTER ?? DEFAULT_CLUSTER,
     rpcUrl: process.env.HELIUS_RPC_URL ?? process.env.RPC_URL,
     baseMint: process.env.BASE_MINT ?? DEFAULT_BASE_MINT,
@@ -42,10 +26,7 @@ function parseArgs(argv) {
     const next = argv[index + 1];
 
     if (arg === "--pool" && next) {
-      options.pools.push(next);
-      index += 1;
-    } else if (arg === "--output" && next) {
-      options.output = next;
+      options.pool = next;
       index += 1;
     } else if (arg === "--cluster" && next) {
       options.cluster = next;
@@ -73,11 +54,11 @@ function parseArgs(argv) {
     }
   }
 
+  if (!options.pool) {
+    throw new Error("pass --pool <LB_PAIR_ADDRESS>");
+  }
   if (!options.rpcUrl) {
     throw new Error("set HELIUS_RPC_URL, RPC_URL, or pass --rpc-url");
-  }
-  if (options.pools.length === 0) {
-    throw new Error("pass at least one --pool <LB_PAIR_ADDRESS>");
   }
   if (!Number.isInteger(options.binArrayCount) || options.binArrayCount <= 0) {
     throw new Error("--bin-array-count must be a positive integer");
@@ -90,6 +71,14 @@ function parseArgs(argv) {
   }
 
   return options;
+}
+
+function readPackageVersion(packageName) {
+  try {
+    return require(`${packageName}/package.json`).version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 function publicKeyString(value) {
@@ -117,33 +106,25 @@ function tokenMintDecimals(token) {
   return decimals;
 }
 
-function numberFrom(value, fieldName) {
-  const numberValue = Number(value?.toString ? value.toString() : value);
-  if (!Number.isFinite(numberValue)) {
-    throw new Error(`SDK ${fieldName} was not numeric`);
-  }
-  return numberValue;
-}
-
-function normalizedUsdcPerSol({ uiPrice, tokenXMint, tokenYMint, baseMint, quoteMint }) {
-  const price = new Decimal(uiPrice);
-  if (tokenXMint === baseMint && tokenYMint === quoteMint) {
-    return price.toString();
-  }
-  if (tokenXMint === quoteMint && tokenYMint === baseMint) {
-    return new Decimal(1).div(price).toString();
-  }
-  throw new Error(
-    `pool token mints do not match configured base/quote: ${tokenXMint}, ${tokenYMint}`,
-  );
-}
-
 function rawToUi(rawAmount, decimals) {
   return new Decimal(rawAmount.toString()).div(new Decimal(10).pow(decimals));
 }
 
 function uiToRaw(uiAmount, decimals) {
   return new Decimal(uiAmount).mul(new Decimal(10).pow(decimals)).floor().toFixed(0);
+}
+
+function normalizedUsdcPerSol({ uiPrice, tokenXMint, tokenYMint, baseMint, quoteMint }) {
+  const price = new Decimal(uiPrice);
+  if (tokenXMint === baseMint && tokenYMint === quoteMint) {
+    return price;
+  }
+  if (tokenXMint === quoteMint && tokenYMint === baseMint) {
+    return new Decimal(1).div(price);
+  }
+  throw new Error(
+    `pool token mints do not match configured base/quote: ${tokenXMint}, ${tokenYMint}`,
+  );
 }
 
 function swapForDirection(direction, tokenXMint, tokenYMint, baseMint, quoteMint) {
@@ -226,6 +207,8 @@ async function quoteDirection({ dlmm, direction, options, tokenXMint, tokenYMint
     if (consumedInputAmount.lte(0) || outputAmount.lte(0)) {
       throw new Error("SDK quote returned a non-positive consumed input or output amount");
     }
+    const feeAmount = rawToUi(quote.fee.toString(), inputDecimals);
+    const protocolFeeAmount = rawToUi(quote.protocolFee.toString(), inputDecimals);
     const effectivePrice =
       direction === "USDC -> SOL"
         ? consumedInputAmount.div(outputAmount)
@@ -241,9 +224,9 @@ async function quoteDirection({ dlmm, direction, options, tokenXMint, tokenYMint
       consumed_input_amount_raw: consumedInputAmountRaw,
       output_amount: outputAmount.toString(),
       output_amount_raw: outputAmountRaw,
-      fee_amount: rawToUi(quote.fee.toString(), inputDecimals).toString(),
+      fee_amount: feeAmount.toString(),
       fee_amount_raw: quote.fee.toString(),
-      protocol_fee_amount: rawToUi(quote.protocolFee.toString(), inputDecimals).toString(),
+      protocol_fee_amount: protocolFeeAmount.toString(),
       protocol_fee_amount_raw: quote.protocolFee.toString(),
       price_impact_bps: new Decimal(quote.priceImpact.toString()).mul(100).toString(),
       effective_price: effectivePrice.toString(),
@@ -267,16 +250,16 @@ async function quoteDirection({ dlmm, direction, options, tokenXMint, tokenYMint
   }
 }
 
-async function fixtureForPool(connection, options, poolAddress) {
-  // SDKの同一読み取り結果から、Rust側が価格式だけを再計算するための入力と期待値を固定する。
-  const dlmm = await DLMM.create(connection, new PublicKey(poolAddress), {
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  const connection = new Connection(options.rpcUrl, "confirmed");
+  const dlmm = await DLMM.create(connection, new PublicKey(options.pool), {
     cluster: options.cluster,
   });
   const activeBin = await dlmm.getActiveBin();
-  const pricePerLamport = activeBin.price.toString();
-  const sdkUiPrice = dlmm.fromPricePerLamport(Number(activeBin.price)).toString();
   const tokenXMint = tokenMintAddress(dlmm.tokenX);
   const tokenYMint = tokenMintAddress(dlmm.tokenY);
+  const sdkUiPrice = dlmm.fromPricePerLamport(Number(activeBin.price)).toString();
   const normalizedPrice = normalizedUsdcPerSol({
     uiPrice: sdkUiPrice,
     tokenXMint,
@@ -298,31 +281,6 @@ async function fixtureForPool(connection, options, poolAddress) {
     );
   }
 
-  return {
-    lb_pair_address: poolAddress,
-    active_id: numberFrom(activeBin.binId, "active bin id"),
-    bin_step: numberFrom(dlmm.lbPair.binStep, "bin step"),
-    token_x_mint: tokenXMint,
-    token_y_mint: tokenYMint,
-    token_x_decimals: tokenMintDecimals(dlmm.tokenX),
-    token_y_decimals: tokenMintDecimals(dlmm.tokenY),
-    sdk_price_per_lamport: pricePerLamport,
-    sdk_ui_price: sdkUiPrice,
-    normalized_usdc_per_sol: normalizedPrice.toString(),
-    quotes,
-  };
-}
-
-async function main() {
-  const options = parseArgs(process.argv.slice(2));
-  const connection = new Connection(options.rpcUrl, "confirmed");
-  const outputPath = resolve(SCRIPT_DIR, options.output);
-
-  const fixtures = [];
-  for (const poolAddress of options.pools) {
-    fixtures.push(await fixtureForPool(connection, options, poolAddress));
-  }
-
   const body = {
     schema_version: 1,
     source: "meteora_dlmm_sdk",
@@ -330,17 +288,15 @@ async function main() {
     sdk_version: readPackageVersion("@meteora-ag/dlmm"),
     generated_at: new Date().toISOString(),
     cluster: options.cluster,
+    lb_pair_address: options.pool,
     base_mint: options.baseMint,
     quote_mint: options.quoteMint,
     trade_size_usdc: options.tradeSizeUsdc,
     bin_array_count: options.binArrayCount,
     slippage_bps: options.slippageBps,
-    fixtures,
+    quotes,
   };
-
-  await mkdir(dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, `${JSON.stringify(body, null, 2)}\n`);
-  console.log(`wrote ${outputPath}`);
+  process.stdout.write(`${JSON.stringify(body, null, 2)}\n`);
 }
 
 main().catch((error) => {
