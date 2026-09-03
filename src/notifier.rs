@@ -92,16 +92,6 @@ pub fn build_price_spread_embed_payload(
     environment: &str,
     embed_colors: &EmbedColors,
 ) -> Value {
-    let raydium_price = if spread.dex_a.dex.as_str() == "Raydium" {
-        spread.dex_a.price
-    } else {
-        spread.dex_b.price
-    };
-    let orca_price = if spread.dex_a.dex.as_str() == "Orca" {
-        spread.dex_a.price
-    } else {
-        spread.dex_b.price
-    };
     let slot = [spread.dex_a.slot, spread.dex_b.slot]
         .into_iter()
         .flatten()
@@ -117,11 +107,11 @@ pub fn build_price_spread_embed_payload(
         "username": bot_name,
         "embeds": [{
             "title": "SOL/USDC Price Spread",
-            "description": "Raydium and Orca price spread summary",
+            "description": format!("{} and {} price spread summary", spread.dex_a.dex, spread.dex_b.dex),
             "color": embed_colors.normal,
             "fields": [
-                field("Raydium", format!("{raydium_price} USDC"), true),
-                field("Orca", format!("{orca_price} USDC"), true),
+                field(spread.dex_a.dex.to_string(), format!("{} USDC", spread.dex_a.price), true),
+                field(spread.dex_b.dex.to_string(), format!("{} USDC", spread.dex_b.price), true),
                 field("Spread", format!("{} USDC / {} bps", spread.absolute_spread, spread.spread_bps), false),
                 field("Higher", spread.higher_dex.to_string(), true),
                 field("Lower", spread.lower_dex.to_string(), true),
@@ -170,14 +160,19 @@ pub fn build_price_spreads_embed_payload(
 
     // Discordには詳細なMeteora内部状態を出さず、比較に必要な概要だけを載せる。
     for spread in spreads {
+        let fee_adjusted_reference_spread = spread
+            .fee_adjusted_reference_spread
+            .map(|value| format!("{value} USDC"))
+            .unwrap_or_else(|| "disabled".to_string());
         fields.push(field(
             format!("{} vs {}", spread.dex_a.dex, spread.dex_b.dex),
             format!(
-                "{} USDC / {} bps\nHigher: {}\nLower: {}\n{}",
+                "{} USDC / {} bps\nHigher: {}\nLower: {}\nFee adjusted: {}\n{}",
                 spread.absolute_spread,
                 spread.spread_bps,
                 spread.higher_dex,
                 spread.lower_dex,
+                fee_adjusted_reference_spread,
                 spread.comparison_direction
             ),
             false,

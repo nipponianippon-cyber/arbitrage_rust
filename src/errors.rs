@@ -88,12 +88,14 @@ pub enum AppError {
     Io(#[from] std::io::Error),
     #[error("toml error: {0}")]
     Toml(#[from] toml::de::Error),
+    #[error("json error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 impl AppError {
     pub fn component(&self) -> &'static str {
         match self {
-            Self::Config(_) | Self::Io(_) | Self::Toml(_) => "config",
+            Self::Config(_) | Self::Io(_) | Self::Toml(_) | Self::Json(_) => "config",
             Self::Rpc(_) => "rpc",
             Self::Decode(_) => "decode",
             Self::Pricing(_) => "pricing",
@@ -108,7 +110,7 @@ impl AppError {
             Self::Rpc(_) | Self::Decode(_) | Self::Pricing(_) | Self::Notification(_) => {
                 ErrorSeverity::Warning
             }
-            Self::Io(_) | Self::Toml(_) => ErrorSeverity::Critical,
+            Self::Io(_) | Self::Toml(_) | Self::Json(_) => ErrorSeverity::Critical,
         }
     }
 

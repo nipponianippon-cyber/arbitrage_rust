@@ -22,6 +22,7 @@ BotはHeliusのSolana RPCノードを利用し、Solana上の複数DEX間にお�
 - Discord Embedによるリッチ通知
 - SQLiteへのログ保存
 - RPCエラー、価格取得失敗、Discord通知失敗などの異常検知と通知
+- 開発・テスト用の実Solanaアカウントfixture取得補助
 
 ### 初期実装に含めない範囲
 
@@ -33,6 +34,9 @@ BotはHeliusのSolana RPCノードを利用し、Solana上の複数DEX間にお�
 - 複数トークンペアの動的探索
 - Meteora-DLMMプールの自動探索
 - 裁定利益の確定判定
+- fixtureの自動更新
+- fixtureファイルのGit管理
+- 本番実行時のfixture利用
 
 ## 3. 前提条件
 
@@ -363,15 +367,42 @@ Discordへの通知ペイロードは`embeds`を含むJSONとする。通常通�
 
 Meteora-DLMMのLbPair、BinArray、手数料、quote計算は公式SDKまたは既存crateの利用を許可する。
 
-BotはMeteora-DLMMのアカウントレイアウト、PDA導出、quote計算を自前実装する場合でも、公式SDKまたは既存crateの挙動と照合できる形でテストする。
+BotはMeteora-DLMMのアカウントレイアウト、PDA導出、quote計算を自前実装する場合でも、公式SDKまたは既存crateの挙動と照合できる形でテストする。Meteora-DLMMおよびOrca Whirlpoolの価格式・手数料式は、公式SDKまたは公式実装に準じる既存crateとの照合を初期実装の受け入れ条件とする。
 
 Meteora-DLMMのtoken decimalを自前実装で取得する場合は、LbPairからtoken X/Y mintアドレスを読み取り、`getMultipleAccounts`でmint accountを取得して、SPL TokenまたはToken-2022のmint account layoutに基づく`mint_decimals`相当の関数でdecimalを読む。
 
 Meteora-DLMMの手数料を自前実装で算出する場合は、Meteora公式SDKの`getBaseFee`、`getVariableFee`、`getTotalFee`、`FEE_PRECISION`、`MAX_FEE_RATE`と同じ挙動をテストで照合する。特にvariable feeは`volatilityAccumulator * binStep`を二乗し、除算は切り上げで行う。
 
+### 10.4 開発用fixture取得
+
+DEXデコード検証のため、開発・テスト専用に実Solanaアカウントfixtureを取得できる補助機能を用意する。
+
+fixture取得元は初期実装ではHelius HTTP RPCに限定する。将来的に他のSolana JSON-RPC互換プロバイダへ拡張できる設計は許容するが、初期実装のfixture取得コマンドやスクリプトは`HELIUS_RPC_URL`を利用する。
+
+fixture取得機能はBot本体の通常監視機能には含めず、開発用スクリプトまたはテスト補助として扱う。本番実行時にfixtureを読み込んで価格監視する機能は初期実装に含めない。
+
+fixtureには、RPCレスポンスに近いJSON形式で以下を保存する。
+
+- リクエストしたアカウントアドレス
+- RPCメソッド名
+- RPC context slot
+- account owner
+- lamports
+- base64 encoded account data
+- 取得時刻
+- fixture作成時に使った対象DEXと対象ペア
+
+fixture対象には、pool本体だけでなく、価格デコードに必要な依存アカウントも含める。Raydiumではbase/quote vault、OrcaではWhirlpool本体と必要なvaultまたはmint確認用アカウント、Meteora-DLMMではLbPairとtoken X/Y mint account、スリッページ検証を行う場合はactive bin周辺のBinArrayを保存する。
+
+fixtureファイルはGit管理しない。保存先は`tests/fixtures/local/`などのローカル生成ディレクトリを想定し、`.gitignore`で除外する。共有可能な最小サンプルが必要な場合でも、実アカウントfixture本体は手動生成を前提とする。
+
+fixtureの更新は手動で行う。自動更新、定期更新、CI上でのmainnet RPC取得は初期実装に含めない。
+
 ## 11. 設定項目
 
 推奨する`config.toml`構成は以下とする。
+
+SPEC本文には具体的なRaydium、Orca、Meteora-DLMMのmainnetプールアドレスを固定しない。開発・テスト・手動確認に使う具体的なSOL/USDCプールアドレスは`config.example.toml`に記載する。
 
 ```toml
 [bot]
@@ -561,6 +592,9 @@ Botは以下のエラーを分類して扱う。
 - Discord Embed通知メッセージ生成
 - Discord Embedの通常通知・異常通知テンプレート選択
 - SQLite保存処理
+- 保存済みfixture JSONからRPCレスポンス相当のaccount dataを読み込み、DEXデコードをオフラインで検証すること
+- fixtureから復元したRaydium、Orca、Meteora-DLMMの価格が、公式SDKまたは照合済み期待値に対して許容誤差内であること
+- account dataの長さ不足、mint不一致、vault不一致、価格方向不明などの異常fixtureでデコードエラーになること
 
 ### 14.2 結合テスト
 
@@ -570,6 +604,9 @@ Botは以下のエラーを分類して扱う。
 - Discord通知失敗時の挙動
 - Discord Embedペイロード生成とWebhook送信
 - 連続エラー時の異常通知
+- 通常の結合テストはネットワークを使わず、fixtureまたはモックRPCレスポンスで実行できること
+- Helius RPCを実際に叩くテストは通常の`cargo test`から分離し、明示的に指定した場合だけ実行すること
+- 公式SDKまたは既存crateとの照合テストも通常のオフラインテストと分離し、必要な依存関係やネットワークが利用できない場合は警告として扱うこと
 
 ### 14.3 手動確認
 
@@ -580,12 +617,28 @@ Botは以下のエラーを分類して扱う。
 - SQLiteに価格観測結果と価格差が保存されること
 - SQLiteにMeteora-DLMM固有状態が保存されること
 - RPC障害や不正設定時に異常通知されること
+- 開発用fixture取得スクリプトを手動実行し、Helius RPCから対象poolと依存アカウントのJSON fixtureを生成できること
+- 生成済みfixtureを使ったオフラインテストで、Raydium、Orca、Meteora-DLMMのデコード結果が再現できること
+
+### 14.4 fixture検証の受け入れ基準
+
+通常の`cargo test`はネットワークなしで成功することを必須とする。保存済みfixtureを読み込むテストは、RPCへ接続せずに`AccountData`相当の入力を復元し、各DEXの`decode_pool_meta`および`decode_price`相当の処理を検証する。
+
+価格検証では完全一致ではなく許容誤差を使う。許容誤差はDEXごとに明示し、少なくとも以下を満たすこととする。
+
+- 出力価格が`USDC per SOL`で正の値であること
+- 外部照合値または公式SDK出力との乖離が設定した許容bps以内であること
+- decimal補正と価格方向の反転が期待通りであること
+- Raydium、Orca、Meteora-DLMMそれぞれのmint、vault、LbPair、token X/Y mintがfixture期待値と一致すること
+- Meteora-DLMMのbase fee、variable fee、total feeが公式SDK互換式の結果と一致すること
+
+公式SDKまたは既存crateとの照合は初期実装の受け入れ条件とする。ただし、ローカル環境で依存関係、ネットワーク、SDK実行環境が利用できず照合を実行できない場合は、通常テストの失敗ではなく警告として扱う。その場合でも、照合未実行であることをテスト出力または手動確認手順に明記する。
 
 ## 15. 未決事項
 
-- Raydium SOL/USDCの具体的なプールアドレス
-- Orca SOL/USDCの具体的なプールアドレス
-- Meteora-DLMM SOL/USDCの具体的なLbPairアドレス
+- `config.example.toml`に記載するRaydium SOL/USDCの具体的なプールアドレス
+- `config.example.toml`に記載するOrca SOL/USDCの具体的なプールアドレス
+- `config.example.toml`に記載するMeteora-DLMM SOL/USDCの具体的なLbPairアドレス
 - 裁定判定しきい値
 - 想定取引サイズ
 - スリッページ計算に使う想定取引サイズ

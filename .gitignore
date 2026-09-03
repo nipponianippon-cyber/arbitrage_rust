@@ -1,6 +1,9 @@
 /target
 .env
+.env.example
 config.toml
 config.example.toml
 data/
+tests/fixtures/local/
 .codex-target/
+add_func.txt

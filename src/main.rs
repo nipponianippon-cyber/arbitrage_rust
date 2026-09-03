@@ -1,16 +1,8 @@
-mod config;
-mod dex;
-mod errors;
-mod notifier;
-mod pricing;
-mod rpc;
-mod runner;
-mod storage;
-
-use crate::config::load_config;
-use crate::notifier::DiscordNotifier;
-use crate::rpc::RpcClient;
-use crate::storage::Storage;
+use arbitrage_rust::config::load_config;
+use arbitrage_rust::notifier::DiscordNotifier;
+use arbitrage_rust::rpc::RpcClient;
+use arbitrage_rust::runner;
+use arbitrage_rust::storage::Storage;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -21,7 +13,7 @@ async fn main() {
     }
 }
 
-async fn start() -> Result<(), errors::AppError> {
+async fn start() -> Result<(), arbitrage_rust::errors::AppError> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();

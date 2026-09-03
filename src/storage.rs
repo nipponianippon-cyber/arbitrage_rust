@@ -30,8 +30,10 @@ impl Storage {
                 dex TEXT NOT NULL,
                 pair TEXT NOT NULL,
                 pool_address TEXT NOT NULL,
+                lb_pair_address TEXT,
                 price TEXT,
                 fee_adjusted_price TEXT,
+                slippage_adjusted_price TEXT,
                 liquidity TEXT,
                 slot INTEGER,
                 rpc_success INTEGER NOT NULL,
@@ -99,6 +101,8 @@ impl Storage {
             );
             ",
         )?;
+        self.add_column_if_missing("price_observations", "lb_pair_address", "TEXT")?;
+        self.add_column_if_missing("price_observations", "slippage_adjusted_price", "TEXT")?;
         self.add_column_if_missing("price_spreads", "comparison_direction", "TEXT")?;
         self.add_column_if_missing("price_spreads", "fee_adjusted_reference_spread", "TEXT")?;
         self.add_column_if_missing("monitor_errors", "dex", "TEXT")?;
@@ -120,17 +124,20 @@ impl Storage {
         self.conn.execute(
             "
             INSERT INTO price_observations (
-                observed_at, dex, pair, pool_address, price, fee_adjusted_price,
-                liquidity, slot, rpc_success, error_kind, error_message
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, NULL, NULL)
+                observed_at, dex, pair, pool_address, lb_pair_address, price,
+                fee_adjusted_price, slippage_adjusted_price, liquidity, slot,
+                rpc_success, error_kind, error_message
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, NULL, NULL)
             ",
             params![
                 price.observed_at.to_rfc3339(),
                 price.dex.as_str(),
                 price.pair.as_str(),
                 price.pool_address.as_str(),
+                lb_pair_address_for(price.dex, price.pool_address.as_str()),
                 price.price.to_string(),
                 price.fee_adjusted_price.map(|value| value.to_string()),
+                price.slippage_adjusted_price.map(|value| value.to_string()),
                 price.liquidity.map(|value| value.to_string()),
                 price.slot,
             ],
@@ -148,15 +155,17 @@ impl Storage {
         self.conn.execute(
             "
             INSERT INTO price_observations (
-                observed_at, dex, pair, pool_address, price, fee_adjusted_price,
-                liquidity, slot, rpc_success, error_kind, error_message
-            ) VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL, NULL, 0, ?5, ?6)
+                observed_at, dex, pair, pool_address, lb_pair_address, price,
+                fee_adjusted_price, slippage_adjusted_price, liquidity, slot,
+                rpc_success, error_kind, error_message
+            ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, NULL, 0, ?6, ?7)
             ",
             params![
                 chrono::Utc::now().to_rfc3339(),
                 dex,
                 pair,
                 pool_address,
+                lb_pair_address_for_str(dex, pool_address),
                 error.component(),
                 error.to_string(),
             ],
@@ -318,5 +327,21 @@ fn price_for_dex(spread: &PriceSpread, dex: &str) -> Result<rust_decimal::Decima
         Ok(spread.dex_b.price)
     } else {
         Err(AppError::Pricing(format!("spread is missing {dex} price")))
+    }
+}
+
+fn lb_pair_address_for(dex: crate::dex::DexKind, pool_address: &str) -> Option<&str> {
+    if dex == crate::dex::DexKind::MeteoraDlmm {
+        Some(pool_address)
+    } else {
+        None
+    }
+}
+
+fn lb_pair_address_for_str<'a>(dex: &str, pool_address: &'a str) -> Option<&'a str> {
+    if dex == crate::dex::DexKind::MeteoraDlmm.as_str() {
+        Some(pool_address)
+    } else {
+        None
     }
 }

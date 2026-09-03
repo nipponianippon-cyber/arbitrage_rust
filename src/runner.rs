@@ -6,7 +6,7 @@ use crate::dex::raydium;
 use crate::dex::{DexKind, DexPrice, PoolAccounts};
 use crate::errors::{AppError, ErrorSeverity, MonitorErrorRecord};
 use crate::notifier::DiscordNotifier;
-use crate::pricing::calculate_all_spreads;
+use crate::pricing::{calculate_all_spreads, slippage_adjusted_buy_price};
 use crate::rpc::{AccountData, RpcClient};
 use crate::storage::Storage;
 use std::collections::HashMap;
@@ -66,7 +66,14 @@ pub async fn run_once(
     let mut prices = Vec::new();
     for pool in enabled {
         match decode_pool_price(pool, &all_accounts) {
-            Ok((price, meteora_state)) => {
+            Ok((mut price, meteora_state)) => {
+                if config.pricing.consider_slippage {
+                    price.slippage_adjusted_price = slippage_adjusted_buy_price(
+                        price.price,
+                        config.pricing.trade_size_usdc,
+                        price.liquidity,
+                    );
+                }
                 storage.insert_price_observation(&price)?;
                 if let Some(state) = meteora_state {
                     storage.insert_meteora_dlmm_state(&state)?;

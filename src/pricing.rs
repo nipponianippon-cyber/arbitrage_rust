@@ -112,3 +112,12 @@ pub fn price_impact_bps(
     }
     Some(trade_size / liquidity * Decimal::from(10_000u64))
 }
+
+pub fn slippage_adjusted_buy_price(
+    price: Decimal,
+    trade_size_usdc: Option<Decimal>,
+    liquidity_usdc: Option<Decimal>,
+) -> Option<Decimal> {
+    let impact_bps = price_impact_bps(trade_size_usdc, liquidity_usdc)?;
+    Some(price * (Decimal::ONE + impact_bps / Decimal::from(10_000u64)))
+}
