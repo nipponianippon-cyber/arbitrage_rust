@@ -25,6 +25,7 @@
 - [x] Discord Embed通知を実装する。
 - [x] 30秒周期の監視ループを実装する。
 - [x] 開発・テスト用fixture取得補助を実装する。
+- [ ] Meteora-DLMM active bin価格式を公式SDK出力fixtureで照合する。
 - [ ] 単体テスト、結合テスト、手動確認を実施する。
 
 ## スコープ
@@ -309,6 +310,14 @@ Meteora-DLMMでは、初期実装の監視価格は現在のactive bin価格と�
 
 Meteora-DLMMのtoken X/Y decimalはLbPair上の値として扱わない。LbPairから取得したtoken X/Y mintアドレスのmint accountを追加取得し、mint account dataから読み取る。
 
+Meteora-DLMM active bin価格式は、Meteora公式TypeScript SDKを明示実行して生成した参照fixtureで照合する。照合対象はactive bin価格式のみとし、LbPair decode offset、手数料式、BinArray quote、スリッページ計算はこの照合スコープに含めない。
+
+SDK参照fixtureには、同じSDK実行内で取得または算出した`lb_pair_address`、`active_id`、`bin_step`、token X/Y mint、token X/Y decimals、SDKのprice per lamport、SDKのUI価格、`USDC per SOL`へ正規化した期待価格、SDKパッケージ名、SDKバージョン、生成時刻を保存する。active binは時間で変化するため、Rust側の通常テストではlive RPCを叩かず、fixture内の`active_id`、`bin_step`、decimals、期待価格だけを使って価格式を検証する。
+
+通常の`cargo test`は、保存済みSDK参照fixtureを読むだけで成功する。Meteora公式SDKを実行してfixtureを再生成する処理は、Node/TypeScript依存とネットワーク依存を持つ明示実行コマンドとして通常テストから分離する。
+
+active bin価格式の許容誤差は原則`0.01 bps`以内とする。既存の`f64`ベース実装がこの許容誤差を満たせない場合は、SDK fixtureに合わせて`Decimal`または高精度計算へ置き換える。
+
 スリッページ計算を行う場合は、active bin周辺のBinArrayも取得し、公式SDKまたは既存crateのquoteロジックを利用して想定取引サイズに対する価格インパクトを算出する。
 
 ## 価格計算
@@ -501,6 +510,8 @@ fixture対象には、pool本体だけでなく、価格デコードに必要な
 
 fixtureファイルはGit管理しない。保存先は`tests/fixtures/local/`などのローカル生成ディレクトリを想定し、`.gitignore`で除外する。fixtureの更新は手動で行う。自動更新、定期更新、CI上でのmainnet RPC取得は初期実装に含めない。
 
+Meteora-DLMM active bin公式SDK照合用には、RPCレスポンスfixtureとは別にSDK参照fixtureを用意する。SDK参照fixtureは複数のMeteora-DLMM poolを対象にし、`bin_step`、`active_id`、token X/Y方向、decimal差が異なるケースを含める。fixture生成は明示実行だけで行い、通常の`cargo test`やCIではSDK、Node、ネットワークを要求しない。
+
 ## マイルストーン
 
 ### マイルストーン1: 設定読み込み
@@ -590,6 +601,19 @@ Raydium、Orca Whirlpool、Meteora-DLMMのDEX別デコーダを実装する。Or
 - 保存済みfixtureを使い、RPCへ接続せずにDEXデコードを検証できる。
 - Helius RPCを実際に叩くテストは通常の`cargo test`から分離し、明示指定時だけ実行される。
 
+### マイルストーン9: Meteora-DLMM active bin公式SDK照合
+
+Meteora公式TypeScript SDKを明示実行して、Meteora-DLMM active bin価格式の参照fixtureを生成する。Rust実装は保存済みSDK参照fixtureを読み込み、`active_id`、`bin_step`、token X/Y decimalsから算出した価格がSDKの正規化済み期待価格と一致することを検証する。
+
+完了条件:
+
+- SDK fixture生成スクリプトを明示実行し、複数のMeteora-DLMM poolについてactive bin参照値をJSON保存できる。
+- SDK参照fixtureには、`lb_pair_address`、`active_id`、`bin_step`、token X/Y mint、token X/Y decimals、SDK price per lamport、SDK UI価格、`USDC per SOL`へ正規化した期待価格、SDKパッケージ名、SDKバージョン、生成時刻を含める。
+- 通常の`cargo test`ではSDK参照fixtureを読み込むだけで、Node/TypeScript、Meteora公式SDK、ネットワークを要求しない。
+- Rustのactive bin価格式とSDK期待価格の乖離が原則`0.01 bps`以内である。
+- 既存の`f64`ベース実装が許容誤差を満たせない場合、`Decimal`または高精度計算へ置き換える作業を実施対象にする。
+- このマイルストーンの照合対象はactive bin価格式のみとし、LbPair decode offset、手数料式、BinArray quote、スリッページ計算は対象外とする。
+
 ## テスト計画
 
 単体テストでは次を検証する。
@@ -604,6 +628,7 @@ Raydium、Orca Whirlpool、Meteora-DLMMのDEX別デコーダを実装する。Or
 - Meteora-DLMM token X/Y mint accountからのdecimal取得
 - Meteora-DLMM BinArray取得結果の解釈
 - Meteora-DLMM active bin価格計算
+- Meteora-DLMM active bin価格計算とSDK参照fixtureの照合
 - Meteora-DLMM quote計算
 - 価格計算
 - 手数料考慮後価格の計算
@@ -625,6 +650,7 @@ Raydium、Orca Whirlpool、Meteora-DLMMのDEX別デコーダを実装する。Or
 - 連続エラー時の異常通知
 - 通常の結合テストがネットワークを使わず、fixtureまたはモックRPCレスポンスで実行できること
 - 公式SDKまたは既存crateとの照合テストを通常のオフラインテストと分離できること
+- Meteora-DLMM active bin SDK参照fixtureの再生成は明示実行に分離されていること
 
 手動確認では次を検証する。
 
@@ -636,6 +662,7 @@ Raydium、Orca Whirlpool、Meteora-DLMMのDEX別デコーダを実装する。Or
 - SQLiteにMeteora-DLMM固有状態が保存されること
 - RPC障害や不正設定時に異常通知されること
 - 開発用fixture取得スクリプトを手動実行し、Helius RPCから対象poolと依存アカウントのJSON fixtureを生成できること
+- Meteora-DLMM active bin SDK参照fixture生成スクリプトを手動実行し、複数poolの期待価格JSONを生成できること
 - 生成済みfixtureを使ったオフラインテストで、Raydium、Orca、Meteora-DLMMのデコード結果が再現できること
 
 fixture検証の受け入れ基準は次の通り。
@@ -644,6 +671,7 @@ fixture検証の受け入れ基準は次の通り。
 - 保存済みfixtureを読み込むテストはRPCへ接続しない。
 - 出力価格が`USDC per SOL`で正の値である。
 - 外部照合値または公式SDK出力との乖離が設定した許容bps以内である。
+- Meteora-DLMM active bin価格式は、SDK参照fixtureの正規化済み期待価格と`0.01 bps`以内で一致する。
 - Orca Whirlpool、Meteora-DLMMのdecimal補正と価格方向の反転が期待通りである。
 - Raydium、Orca Whirlpool、Meteora-DLMMそれぞれのmint、vault、LbPair、token X/Y mintがfixture期待値と一致する。
 - Orca Whirlpoolの価格式は公式SDKまたは公式実装の`sqrt_price_to_price`相当の結果と、設定した許容bps以内で一致する。
@@ -666,6 +694,7 @@ fixture検証の受け入れ基準は次の通り。
 - SQLiteへ価格観測結果、価格差、Meteora-DLMM固有状態、エラーを保存できる。
 - 通常の`cargo test`がネットワークなしで成功する。
 - fixture取得補助を手動実行でき、fixture本体はGit管理されない。
+- Meteora-DLMM active bin価格式が、複数poolのSDK参照fixtureに対して原則`0.01 bps`以内で一致する。
 
 ## 実装メモ
 
@@ -677,6 +706,8 @@ fixture検証の受け入れ基準は次の通り。
 - 2026-09-03: `do-plan`スキルの制約により、今回の作業ではimport、テスト、ビルド、プログラム実行による検証は行っていない。検証はファイル再読込、検索、差分確認による静的確認に限定した。
 - 2026-09-03: OrcaはWhirlpoolのみを対象とし、旧Orca Constant Product AMM/CPMMは初期実装の対象外とする。Whirlpool価格は`sqrt_price`だけでなく、token A/B mint accountから読んだdecimalで補正する計画に更新した。
 - 2026-09-03: Orca Whirlpoolの価格デコードを更新し、Whirlpool本体から読んだtoken A/B mintのmint accountを追加取得してdecimal補正するようにした。価格計算は`f64`ではなく`Decimal`で`(sqrt_price / 2^64)^2 * 10^(decimals_a - decimals_b)`を計算し、token A/Bがbase/quoteと逆向きの場合は反転する。`do-plan`スキルの制約により、今回もimport、テスト、ビルド、プログラム実行による検証は行っていない。
+- 2026-09-03: Meteora-DLMM active bin価格式は、Meteora公式TypeScript SDKを明示実行して生成した複数poolのSDK参照fixtureで照合する方針にした。通常の`cargo test`は保存済みfixtureのみを読み、SDK、Node、ネットワークを要求しない。許容誤差は原則`0.01 bps`以内とし、既存の`f64`ベース実装で満たせない場合は`Decimal`または高精度計算へ置き換える。
+- 2026-09-03: `tools/meteora-dlmm-sdk-fixture/`にMeteora公式TypeScript SDKのactive bin参照fixture生成ヘルパーを追加し、`src/dex/meteora/meteora_amm.rs`に生成済みfixtureが存在する場合だけ`0.01 bps`以内で照合するオフラインテストを追加した。実fixture生成、SDK install、`cargo test`は`do-plan`スキルの制約により実行していないため、進捗チェックは未完了のままとする。
 
 ## 根拠メモ
 
@@ -685,6 +716,7 @@ fixture検証の受け入れ基準は次の通り。
 - Orca公式SDK概要では、Rust向けに`orca_whirlpools`、価格変換やquoteなどの計算用に`orca_whirlpools_core`が提供されている。根拠: https://docs.orca.so/developers/sdks/overview
 - Orca公式Whirlpool Parametersでは、Whirlpool program ID、config address、fee tierが公開されている。根拠: https://docs.orca.so/developers/architecture/whirlpool-parameters
 - Orca公式実装または公式SDKの価格変換関数に合わせ、Whirlpoolの`sqrt_price`、token A decimal、token B decimalを入力にした価格変換を照合対象とする。根拠: https://github.com/orca-so/whirlpools
+- Meteora公式TypeScript SDKには、active bin取得の`getActiveBin()`、price per lamportからUI価格へ変換する`fromPricePerLamport()`、bin IDから価格を得る`getPriceOfBinByBinId`が用意されている。Meteora-DLMM active bin価格式の参照値は、これらのSDK出力をfixture化して照合する。根拠: https://github.com/MeteoraAg/docs/blob/main/developer-guides/dlmm/typescript-sdk/reference.mdx
 
 ## 未決事項
 
@@ -697,6 +729,7 @@ fixture検証の受け入れ基準は次の通り。
 - 想定取引サイズ
 - スリッページ計算に使う想定取引サイズ
 - Raydiumで対象とするプール種別
+- Meteora-DLMM active bin SDK参照fixtureに含める具体的な複数pool
 - Meteora-DLMMの自動探索方法
 - SQLiteスキーマの詳細
 - Discord Embed通知の最終デザイン
@@ -708,4 +741,4 @@ SQLiteスキーマ初期化は既存データを消さない方法で行う。fi
 
 設定不備は起動時に検出してBotを停止する。一時的なRPC失敗はリトライ対象とし、同一コンポーネントで連続エラーが発生した場合はDiscordへ異常通知する。Discord通知失敗時はSQLiteへエラーを記録し、連続失敗時は標準出力または標準エラーにも出力する。
 
-Meteora-DLMMのアカウントレイアウト、PDA導出、quote計算を自前実装する場合は、公式SDKまたは既存crateの挙動と照合できる形でテストする。Meteora-DLMMおよびOrca Whirlpoolの価格式・手数料式は、公式SDKまたは公式実装に準じる既存crateとの照合を初期実装の受け入れ条件とする。
+Meteora-DLMMのactive bin価格式は、Meteora公式TypeScript SDKを明示実行して生成したSDK参照fixtureと通常のオフラインテストで照合する。Meteora-DLMMのアカウントレイアウト、PDA導出、quote計算を自前実装する場合は、別途、公式SDKまたは既存crateの挙動と照合できる形でテストする。Meteora-DLMM active bin価格式およびOrca Whirlpoolの価格式・手数料式は、公式SDKまたは公式実装に準じる既存crateとの照合を初期実装の受け入れ条件とする。

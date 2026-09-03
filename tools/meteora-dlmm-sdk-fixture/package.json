@@ -1,0 +1,13 @@
+{
+  "name": "meteora-dlmm-sdk-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "node generate-active-bin-fixture.mjs"
+  },
+  "dependencies": {
+    "@meteora-ag/dlmm": "latest",
+    "@solana/web3.js": "^1.98.0",
+    "decimal.js": "^10.4.3"
+  }
+}

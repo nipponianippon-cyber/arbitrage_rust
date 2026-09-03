@@ -5,5 +5,7 @@ config.toml
 config.example.toml
 data/
 tests/fixtures/local/
+tests/fixtures/meteora_dlmm_active_bin_sdk.generated.json
+tools/meteora-dlmm-sdk-fixture/node_modules/
 .codex-target/
 add_func.txt
