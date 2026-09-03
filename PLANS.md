@@ -23,6 +23,7 @@
 - [x] 手数料、スリッページ、価格差計算を実装する。
 - [x] SQLite保存を実装する。
 - [x] Discord Embed通知を実装する。
+- [x] Discord Embedの短縮・整形強化を実装する。
 - [x] 30秒周期の監視ループを実装する。
 - [x] 開発・テスト用fixture取得補助を実装する。
 - [ ] Meteora-DLMM active bin価格式を公式SDK出力fixtureで照合する。
@@ -518,6 +519,17 @@ Embedの表示仕様は次の通り。
 - `timestamp`には監視時刻を設定する。
 - `footer`にはBot名、実行環境、RPC種別を表示する。
 
+Discord Embedの短縮・整形ルールは次の通り。
+
+- SQLiteへ保存する値は丸めず、Discord表示専用のformatterで丸める。
+- DEX価格は小数4桁固定で表示する。
+- 価格差USDCは小数6桁固定で表示する。
+- bpsは小数2桁固定で表示し、`0.01 bps`単位へ丸める。
+- 末尾ゼロは残し、Discord上で数値の桁が揃う表示にする。
+- 通常通知Embedの`fields`は最大12個を初期上限とする。Discord仕様上の上限25個に依存せず、読みやすさを優先する。
+- 将来DEXや比較対象が増えて12 fieldsを超える場合は、優先度の低い詳細を`Summary` fieldへまとめる。完全な内容はSQLiteログを正とする。
+- 初期実装では短縮・整形用の桁数とfield上限はコード上の定数にし、`config.toml`の設定項目は増やさない。
+
 異常発生時は通常の価格差通知とは別に、エラー通知Embedを送信する。エラー通知Embedには少なくとも次を含める。
 
 - 発生時刻
@@ -528,6 +540,13 @@ Embedの表示仕様は次の通り。
 - 対象プールアドレス
 - リトライ予定の有無
 - 連続エラー回数
+
+エラー通知Embedの短縮・整形ルールは次の通り。
+
+- `description`のエラーメッセージは最大500文字に短縮し、超過時は末尾に`...`を付ける。
+- `Source` fieldは最大300文字に短縮し、超過時は末尾に`...`を付ける。
+- PoolアドレスはDiscord表示上は`先頭8文字...末尾8文字`へ短縮する。完全なアドレスはSQLiteへ保存する。
+- エラー通知Embedも最大12 fieldsを初期上限とし、超過する詳細は`Summary` fieldへまとめる。
 
 Discordのフィールド数、文字数、ペイロードサイズの制限を超えないようにする。制限超過が見込まれる場合は詳細情報を短縮し、完全な内容はSQLiteログへ保存する。
 
@@ -646,13 +665,17 @@ Raydium、Orca Whirlpool、Meteora-DLMMのDEX別デコーダを実装する。Or
 
 ### マイルストーン6: Discord Embed通知
 
-通常通知Embedと異常通知Embedを実装する。通常通知には3 DEX価格と全組み合わせ価格差を含め、Meteora-DLMM固有詳細は含めない。
+通常通知Embedと異常通知Embedを実装する。通常通知には3 DEX価格と全組み合わせ価格差を含め、Meteora-DLMM固有詳細は含めない。表示専用の丸め、短縮、field上限を適用し、Discord上で読みやすいEmbedに整える。
 
 完了条件:
 
 - 各監視サイクルで価格差通知Embedを送信できる。
 - 異常発生時にエラー通知Embedを送信できる。
 - Embedに監視時刻、対象ペア、DEX別価格、価格差、価格差率、高いDEX、安いDEX、比較方向、slot、手数料考慮後の参考差分、エラー有無を含められる。
+- Discord表示ではDEX価格を小数4桁、価格差USDCを小数6桁、bpsを小数2桁固定で表示できる。
+- 通常通知Embedと異常通知Embedの`fields`を最大12個に収め、超過分を`Summary` fieldへまとめられる。
+- エラー通知Embedでは長いエラーメッセージ、source、poolアドレスを短縮し、完全な情報はSQLiteログへ保存できる。
+- 短縮・整形はDiscord表示にだけ適用し、SQLiteへ保存する数値やエラー本文は丸めたり短縮したりしない。
 - Discord通知失敗時にSQLiteへエラー保存し、連続失敗時は標準出力または標準エラーへ出力できる。
 
 ### マイルストーン7: 監視ループ
@@ -719,6 +742,10 @@ Meteora公式TypeScript SDKを明示実行して、Meteora-DLMM active bin価格
 - 価格差率計算
 - Discord Embed通知メッセージ生成
 - Discord Embedの通常通知・異常通知テンプレート選択
+- Discord Embed表示専用formatterで、DEX価格、価格差USDC、bpsを指定桁数に丸めて末尾ゼロ付きで出力できること
+- Discord Embedのfield数が最大12個に収まり、超過分が`Summary` fieldへまとめられること
+- エラー通知Embedで長いエラーメッセージ、source、poolアドレスが表示用に短縮されること
+- Discord Embedの短縮・丸めがSQLite保存値へ影響しないこと
 - SQLite保存処理
 - fixture JSONからRPCレスポンス相当のaccount dataを復元したDEXデコード
 - 異常fixtureでのデコードエラー
@@ -730,6 +757,7 @@ Meteora公式TypeScript SDKを明示実行して、Meteora-DLMM active bin価格
 - SQLite保存失敗時の挙動
 - Discord通知失敗時の挙動
 - Discord Embedペイロード生成とWebhook送信
+- Discord Embedペイロードが通常通知・異常通知ともにfield数上限と文字数短縮ルールを満たすこと
 - 連続エラー時の異常通知
 - 通常の結合テストがネットワークを使わず、fixtureまたはモックRPCレスポンスで実行できること
 - 公式SDKまたは既存crateとの照合テストを通常のオフラインテストと分離できること
@@ -797,6 +825,8 @@ fixture検証の受け入れ基準は次の通り。
 - 2026-09-03: `tools/meteora-dlmm-sdk-fixture/`にMeteora公式TypeScript SDKのactive bin参照fixture生成ヘルパーを追加し、`src/dex/meteora/meteora_amm.rs`に生成済みfixtureが存在する場合だけ`0.01 bps`以内で照合するオフラインテストを追加した。実fixture生成、SDK install、`cargo test`は`do-plan`スキルの制約により実行していないため、進捗チェックは未完了のままとする。
 - 2026-09-03: 次のMeteora-DLMM実装方針を確定した。quote方向は`USDC -> SOL`と`SOL -> USDC`の両方向、想定取引サイズは既存の`pricing.trade_size_usdc`を流用、quoteロジックはMeteora公式SDKまたは公式Rust integration相当に合わせる。BinArrayは両方向それぞれ公式helper相当で最大`count = 4`を初期値として取得し、設定で変更可能にする。quoteのみ失敗した場合はactive bin価格による監視と価格差計算を継続し、詳細はSQLiteへ保存する。SDK参照fixtureはactive bin価格だけでなく両方向quote照合にも広げる。
 - 2026-09-03: `pricing.meteora_dlmm_bin_array_count`と`pricing.meteora_dlmm_slippage_bps`を追加し、Meteora-DLMMの両方向quoteを公式TypeScript SDKヘルパーで取得する実装を追加した。Rust側はSDK helperのJSONを`MeteoraDlmmQuote`へ変換し、quote成功時は`USDC -> SOL`の実効価格を`slippage_adjusted_price`へ反映する。quote失敗時はMeteora価格取得を失敗扱いにせず、`meteora_dlmm_quotes`と`monitor_errors`へ記録する。`fetch_fixtures`は公式SDK helperが返したBinArrayアドレスをHelius fixture取得対象へ追加する。do-planスキルの制約により、import、テスト、ビルド、プログラム実行による検証は行っていない。
+- 2026-09-03: Discord Embedの短縮・整形方針を確定した。Discord表示専用formatterでDEX価格は小数4桁、価格差USDCは小数6桁、bpsは小数2桁固定に丸め、末尾ゼロを残す。通常通知と異常通知の`fields`は最大12個を初期上限とし、超過分は`Summary` fieldへまとめる。エラー通知では`description`を最大500文字、`Source` fieldを最大300文字、Poolアドレスを`先頭8文字...末尾8文字`へ短縮する。これらはコード上の定数とし、SQLite保存値には適用しない。
+- 2026-09-03: `src/notifier.rs`にDiscord表示専用formatter、field数上限処理、長文短縮、Poolアドレス短縮を追加した。通常通知ではDEX価格、価格差USDC、bps、手数料考慮後参考差分を表示専用に丸める。異常通知ではエラーメッセージ、source、Poolアドレスを表示用に短縮する。payload生成の単体テストを追加したが、do-planスキルの制約によりimport、テスト、ビルド、プログラム実行による検証は行っていない。
 
 ## 根拠メモ
 
@@ -821,7 +851,6 @@ fixture検証の受け入れ基準は次の通り。
 - Raydiumで対象とするプール種別
 - Meteora-DLMM active bin SDK参照fixtureに含める具体的な複数pool
 - Meteora-DLMMの自動探索方法
-- Discord Embed通知の最終デザイン
 - ローカル実行時の起動方法
 
 ## 冪等性と復旧
