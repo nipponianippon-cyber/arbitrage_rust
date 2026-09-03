@@ -113,6 +113,20 @@ fn collect_dependent_targets(
         DexKind::Orca => {
             let meta = orca::decode_pool_meta(&account.data)?;
             let (base_vault, quote_vault) = orca::vault_addresses_for_config(pool, &meta)?;
+            push_dependency(
+                pool,
+                targets,
+                dependent_addresses,
+                meta.token_mint_a,
+                "token_mint_a",
+            );
+            push_dependency(
+                pool,
+                targets,
+                dependent_addresses,
+                meta.token_mint_b,
+                "token_mint_b",
+            );
             push_dependency(pool, targets, dependent_addresses, base_vault, "base_vault");
             push_dependency(pool, targets, dependent_addresses, quote_vault, "quote_vault");
         }

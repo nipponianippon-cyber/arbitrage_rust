@@ -45,6 +45,8 @@ pub async fn run_once(
             DexKind::Orca => {
                 let meta = orca::decode_pool_meta(&account.data)?;
                 let (base_vault, quote_vault) = orca::vault_addresses_for_config(pool, &meta)?;
+                dependent_addresses.push(meta.token_mint_a);
+                dependent_addresses.push(meta.token_mint_b);
                 dependent_addresses.push(base_vault);
                 dependent_addresses.push(quote_vault);
             }
@@ -208,8 +210,20 @@ fn decode_pool_price(
         DexKind::Orca => {
             let meta = orca::decode_pool_meta(&pool_account.data)?;
             let (base_vault, quote_vault) = orca::vault_addresses_for_config(pool, &meta)?;
-            let pool_accounts = PoolAccounts {
+            let pool_accounts = orca::OrcaPoolAccounts {
                 pool: pool_account,
+                token_mint_a: accounts.get(&meta.token_mint_a).cloned().ok_or_else(|| {
+                    AppError::Rpc(format!(
+                        "missing fetched Whirlpool token mint A account {}",
+                        meta.token_mint_a
+                    ))
+                })?,
+                token_mint_b: accounts.get(&meta.token_mint_b).cloned().ok_or_else(|| {
+                    AppError::Rpc(format!(
+                        "missing fetched Whirlpool token mint B account {}",
+                        meta.token_mint_b
+                    ))
+                })?,
                 base_vault: accounts.get(&base_vault).cloned(),
                 quote_vault: accounts.get(&quote_vault).cloned(),
             };

@@ -1,6 +1,6 @@
 # Raydium・Orca・Meteora-DLMM対応のSolana DEX価格監視Bot実装計画
 
-このPLANS.mdは`SPEC.md`だけを根拠にした実装計画です。リポジトリ内の既存実装、過去の作業履歴、外部資料、実アカウント情報、未確認のSDK仕様は根拠に含めません。実装中に新しい事実が分かった場合でも、その事実が`SPEC.md`に反映されるまでは、この計画では「未確認」または「SPEC外」として扱います。
+このPLANS.mdは`SPEC.md`、リポジトリ内の既存実装、実装中に確認した公式ドキュメント、公式SDKまたは公式実装、保存済みfixture、手動確認結果を根拠に更新する。根拠にした外部仕様や実装上の判断は、必要に応じて「根拠メモ」または「実装メモ」に記録する。
 
 ## 目的 / 全体像
 
@@ -18,6 +18,7 @@
 - [x] Helius HTTP RPCクライアントを実装する。
 - [x] DEX共通インターフェースとRaydium価格デコードを実装する。
 - [x] Orca価格デコードを実装する。
+- [x] Orca Whirlpool価格のmint decimal補正を実装する。
 - [ ] Meteora-DLMMのLbPair、mint account、必要に応じたBinArray取得と価格デコードを実装する。
 - [ ] 手数料、スリッページ、価格差計算を実装する。
 - [x] SQLite保存を実装する。
@@ -32,7 +33,7 @@
 
 - Helius HTTP RPCによるSolanaオンチェーンデータ取得
 - RaydiumのSOL/USDCプール価格監視
-- OrcaのSOL/USDCプール価格監視
+- Orca WhirlpoolのSOL/USDCプール価格監視
 - Meteora-DLMMのSOL/USDC LbPair価格監視
 - `.env`と`config.toml`による設定読み込み
 - 30秒間隔の定期監視
@@ -52,6 +53,7 @@
 - Jupiterなどのオフチェーン集約APIを使った価格取得
 - Helius WebSocket、Enhanced API、Webhookの利用
 - 複数トークンペアの動的探索
+- Orca旧Constant Product AMM/CPMMプール対応
 - Meteora-DLMMプールの自動探索
 - 裁定利益の確定判定
 - fixtureの自動更新
@@ -282,7 +284,19 @@ Raydium、Orca、Meteora-DLMMの各実装は、DEX固有のプール形式に従
 
 Raydiumでは、設定されたSOL/USDCプールアドレスからプール状態を取得し、必要な残高または現在価格に基づいて価格を算出する。
 
-Orcaでは、設定されたSOL/USDCプールアドレスからプール状態を取得し、必要な残高または現在価格に基づいて価格を算出する。
+Orcaでは、対象プール種別をWhirlpoolに限定する。旧Orca Constant Product AMM/CPMMは初期実装に含めない。
+
+Orca Whirlpoolでは、設定されたSOL/USDC WhirlpoolアドレスからWhirlpool本体を取得し、Whirlpool上の`token_mint_a`、`token_mint_b`、`token_vault_a`、`token_vault_b`、`fee_rate`、`sqrt_price`をデコードする。さらに`token_mint_a`と`token_mint_b`のmint accountを追加取得し、mint account dataからtoken A/B decimalを読み取る。
+
+Orca Whirlpoolの基準価格は、公式SDKまたは公式実装の`sqrt_price_to_price`相当の挙動に合わせる。Whirlpoolの`sqrt_price`はQ64.64形式として扱い、token Aをtoken Bで評価する価格を次の形で算出する。
+
+```text
+price_b_per_a = (sqrt_price / 2^64)^2 * 10^(decimals_a - decimals_b)
+```
+
+Whirlpoolのtoken A/Bが設定上のbase/quoteと同じ向きなら`price_b_per_a`をそのまま`USDC per SOL`として扱う。token A/Bが設定上のquote/baseと逆向きなら、0除算を避けたうえで`1 / price_b_per_a`に反転して`USDC per SOL`へ正規化する。
+
+丸め誤差を抑えるため、実装では可能な限り整数演算、`Decimal`、または公式Rust core SDKを利用する。`f64`を使う場合は最終表示または比較直前に限定し、通常テストまたは明示実行の照合テストで許容bpsを固定する。
 
 Meteora-DLMMでは、初期実装の監視価格は現在のactive bin価格とする。LbPairアカウントから次を取得する。
 
@@ -481,7 +495,7 @@ fixtureにはRPCレスポンスに近いJSON形式で次を保存する。
 fixture対象には、pool本体だけでなく、価格デコードに必要な依存アカウントも含める。
 
 - Raydium: base/quote vault
-- Orca: Whirlpool本体と必要なvaultまたはmint確認用アカウント
+- Orca: Whirlpool本体、token A/B mint account、必要なvault確認用アカウント
 - Meteora-DLMM: LbPairとtoken X/Y mint account
 - スリッページ検証を行う場合: active bin周辺のBinArray
 
@@ -511,14 +525,15 @@ Helius HTTP RPCクライアントを実装し、`getMultipleAccounts`を優先�
 
 ### マイルストーン3: DEX価格デコード
 
-Raydium、Orca、Meteora-DLMMのDEX別デコーダを実装する。Meteora-DLMMではLbPairからactive bin価格に必要な状態を読み取り、token X/Y decimalはmint accountから読む。
+Raydium、Orca Whirlpool、Meteora-DLMMのDEX別デコーダを実装する。Orca WhirlpoolではWhirlpool本体からtoken A/B mintを読み、mint accountからdecimalを読む。Meteora-DLMMではLbPairからactive bin価格に必要な状態を読み取り、token X/Y decimalはmint accountから読む。
 
 完了条件:
 
 - RaydiumのSOL/USDC価格を算出できる。
-- OrcaのSOL/USDC価格を算出できる。
+- Orca WhirlpoolのSOL/USDC価格を、token A/B decimal補正込みで算出できる。
 - Meteora-DLMMのactive bin価格を算出できる。
 - 各DEXの比較用価格が`USDC per SOL`に統一される。
+- Orca Whirlpoolのtoken A/Bがbase/quoteと逆向きの場合でも価格を正しく反転できる。
 - Meteora-DLMMのbase fee、variable fee、total feeをSPEC指定式で算出できる。
 
 ### マイルストーン4: 価格差と手数料・スリッページ
@@ -582,6 +597,9 @@ Raydium、Orca、Meteora-DLMMのDEX別デコーダを実装する。Meteora-DLMM
 - 設定ファイルの読み込みとバリデーション
 - Raydiumプールデコード
 - Orcaプールデコード
+- Orca Whirlpool token A/B mint accountからのdecimal取得
+- Orca Whirlpool sqrt_priceのdecimal補正込み価格計算
+- Orca Whirlpool token A/Bがbase/quoteと逆向きの場合の価格反転
 - Meteora-DLMM LbPairデコード
 - Meteora-DLMM token X/Y mint accountからのdecimal取得
 - Meteora-DLMM BinArray取得結果の解釈
@@ -626,8 +644,9 @@ fixture検証の受け入れ基準は次の通り。
 - 保存済みfixtureを読み込むテストはRPCへ接続しない。
 - 出力価格が`USDC per SOL`で正の値である。
 - 外部照合値または公式SDK出力との乖離が設定した許容bps以内である。
-- decimal補正と価格方向の反転が期待通りである。
-- Raydium、Orca、Meteora-DLMMそれぞれのmint、vault、LbPair、token X/Y mintがfixture期待値と一致する。
+- Orca Whirlpool、Meteora-DLMMのdecimal補正と価格方向の反転が期待通りである。
+- Raydium、Orca Whirlpool、Meteora-DLMMそれぞれのmint、vault、LbPair、token X/Y mintがfixture期待値と一致する。
+- Orca Whirlpoolの価格式は公式SDKまたは公式実装の`sqrt_price_to_price`相当の結果と、設定した許容bps以内で一致する。
 - Meteora-DLMMのbase fee、variable fee、total feeが公式SDK互換式の結果と一致する。
 - 公式SDKまたは既存crateとの照合を実行できない場合は、通常テストの失敗ではなく警告として扱い、照合未実行であることをテスト出力または手動確認手順に明記する。
 
@@ -640,6 +659,7 @@ fixture検証の受け入れ基準は次の通り。
 - Helius HTTP RPCからRaydium、Orca、Meteora-DLMMのSOL/USDC監視に必要なアカウント情報を取得できる。
 - 各DEXの価格をオンチェーンプール状態から算出できる。
 - 価格比較基準が全DEXで`USDC per SOL`に統一されている。
+- Orca Whirlpool価格はmint accountから読んだtoken A/B decimalで補正されている。
 - Raydium、Orca、Meteora-DLMMの全組み合わせ価格差を計算できる。
 - 各監視サイクルでDiscord Embedの価格差通知を送信できる。
 - 異常発生時にエラー通知Embedを送信できる。
@@ -653,12 +673,22 @@ fixture検証の受け入れ基準は次の通り。
 - 2026-09-03: `src/bin/fetch_fixtures.rs`を追加した。`config.toml`の有効poolを読み、pool本体、Raydium/Orcaのvault、Meteora-DLMMのtoken X/Y mint accountをHelius HTTP RPCの`getMultipleAccounts`で取得し、`tests/fixtures/local/`へRPCレスポンスに近いJSONとして保存する。
 - 2026-09-03: `price_observations`に`lb_pair_address`と`slippage_adjusted_price`を保存できるようにし、既存DB向けには不足列を追加するだけの移行にした。全組み合わせ価格差は既存互換のため`price_spread_pairs`へ保存し、従来の`price_spreads`はRaydium vs Orca互換用として残す。
 - 2026-09-03: スリッページは、`trade_size_usdc`とDEXデコーダが返した`liquidity`がある場合に参考買値として`slippage_adjusted_price`へ保存する。Meteora-DLMMのBinArray取得と公式SDK互換quote照合は未完了のため、関連進捗は未完了のままとする。
-- 2026-09-03: `config.example.toml`と`.env.example`を追加した。SPECの未決事項に従い、具体的なmainnet poolアドレスは固定せず`未定`のままにしている。
+- 2026-09-03: `config.example.toml`と`.env.example`を追加した。具体的なmainnet poolアドレスは固定せず`未定`のままにしている。
 - 2026-09-03: `do-plan`スキルの制約により、今回の作業ではimport、テスト、ビルド、プログラム実行による検証は行っていない。検証はファイル再読込、検索、差分確認による静的確認に限定した。
+- 2026-09-03: OrcaはWhirlpoolのみを対象とし、旧Orca Constant Product AMM/CPMMは初期実装の対象外とする。Whirlpool価格は`sqrt_price`だけでなく、token A/B mint accountから読んだdecimalで補正する計画に更新した。
+- 2026-09-03: Orca Whirlpoolの価格デコードを更新し、Whirlpool本体から読んだtoken A/B mintのmint accountを追加取得してdecimal補正するようにした。価格計算は`f64`ではなく`Decimal`で`(sqrt_price / 2^64)^2 * 10^(decimals_a - decimals_b)`を計算し、token A/Bがbase/quoteと逆向きの場合は反転する。`do-plan`スキルの制約により、今回もimport、テスト、ビルド、プログラム実行による検証は行っていない。
+
+## 根拠メモ
+
+- Orca公式ドキュメントでは、現在のOrcaはconcentrated liquidity poolを中心に構成され、Whirlpoolは2022年に導入されたconcentrated liquidity programと説明されている。根拠: https://docs.orca.so/support/about
+- Orca公式ドキュメントのPrice & Ticksでは、Whirlpoolがsquare-root priceで価格を追跡し、Whirlpool accountがcurrent sqrt-priceとcurrent tick-indexを保持すると説明されている。根拠: https://docs.orca.so/developers/architecture/price-and-ticks
+- Orca公式SDK概要では、Rust向けに`orca_whirlpools`、価格変換やquoteなどの計算用に`orca_whirlpools_core`が提供されている。根拠: https://docs.orca.so/developers/sdks/overview
+- Orca公式Whirlpool Parametersでは、Whirlpool program ID、config address、fee tierが公開されている。根拠: https://docs.orca.so/developers/architecture/whirlpool-parameters
+- Orca公式実装または公式SDKの価格変換関数に合わせ、Whirlpoolの`sqrt_price`、token A decimal、token B decimalを入力にした価格変換を照合対象とする。根拠: https://github.com/orca-so/whirlpools
 
 ## 未決事項
 
-SPECで未決とされている事項は、実装中に固定値として決めない。必要な場合は`config.example.toml`の未定値または明示的なTODOとして扱う。
+未決事項は、実装中に固定値として決めない。必要な場合は`config.example.toml`の未定値または明示的なTODOとして扱う。
 
 - `config.example.toml`に記載するRaydium SOL/USDCの具体的なプールアドレス
 - `config.example.toml`に記載するOrca SOL/USDCの具体的なプールアドレス
@@ -667,7 +697,6 @@ SPECで未決とされている事項は、実装中に固定値として決め�
 - 想定取引サイズ
 - スリッページ計算に使う想定取引サイズ
 - Raydiumで対象とするプール種別
-- Orcaで対象とするプール種別
 - Meteora-DLMMの自動探索方法
 - SQLiteスキーマの詳細
 - Discord Embed通知の最終デザイン
