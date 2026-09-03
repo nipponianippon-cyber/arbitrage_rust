@@ -9,6 +9,7 @@ use crate::notifier::DiscordNotifier;
 use crate::pricing::{calculate_all_spreads, slippage_adjusted_buy_price};
 use crate::rpc::{AccountData, RpcClient};
 use crate::storage::Storage;
+use rust_decimal::Decimal;
 use std::collections::HashMap;
 use tokio::time::{self, Duration};
 
@@ -67,6 +68,14 @@ pub async fn run_once(
     for pool in enabled {
         match decode_pool_price(pool, &all_accounts) {
             Ok((mut price, meteora_state)) => {
+                if price.price <= Decimal::ZERO {
+                    let error = AppError::Decode(format!(
+                        "{} decoded non-positive {} price: {}",
+                        pool.dex, pool.pair, price.price
+                    ));
+                    handle_price_error(pool, &error, storage, notifier, config).await?;
+                    continue;
+                }
                 if config.pricing.consider_slippage {
                     price.slippage_adjusted_price = slippage_adjusted_buy_price(
                         price.price,
@@ -81,21 +90,7 @@ pub async fn run_once(
                 prices.push(price);
             }
             Err(error) => {
-                let record = error
-                    .to_monitor_record()
-                    .with_pool_context(pool.dex, pool.account_address());
-                storage.insert_failed_price_observation(
-                    pool.dex.as_str(),
-                    &pool.pair,
-                    &pool.account_address(),
-                    &error,
-                )?;
-                storage.insert_monitor_error(&record)?;
-                if config.notification.notify_on_error {
-                    if let Err(notification_error) = notifier.send_error(&record).await {
-                        eprintln!("{notification_error}");
-                    }
-                }
+                handle_price_error(pool, &error, storage, notifier, config).await?;
             }
         }
     }
@@ -128,6 +123,31 @@ pub async fn run_once(
         }
     }
 
+    Ok(())
+}
+
+async fn handle_price_error(
+    pool: &PoolConfig,
+    error: &AppError,
+    storage: &Storage,
+    notifier: &DiscordNotifier,
+    config: &AppConfig,
+) -> Result<(), AppError> {
+    let record = error
+        .to_monitor_record()
+        .with_pool_context(pool.dex, pool.account_address());
+    storage.insert_failed_price_observation(
+        pool.dex.as_str(),
+        &pool.pair,
+        &pool.account_address(),
+        error,
+    )?;
+    storage.insert_monitor_error(&record)?;
+    if config.notification.notify_on_error {
+        if let Err(notification_error) = notifier.send_error(&record).await {
+            eprintln!("{notification_error}");
+        }
+    }
     Ok(())
 }
 
