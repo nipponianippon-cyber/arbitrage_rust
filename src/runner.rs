@@ -1,7 +1,6 @@
 use crate::config::{AppConfig, PoolConfig};
-use crate::dex::meteora;
 use crate::dex::meteora::{MeteoraDlmmQuoteDirection, MeteoraDlmmState};
-use crate::dex::orca;
+use crate::dex::{meteora, orca};
 use crate::dex::raydium;
 use crate::dex::{DexKind, DexPrice, PoolAccounts};
 use crate::errors::{AppError, ErrorSeverity, MonitorErrorRecord};
@@ -80,7 +79,7 @@ pub async fn run_once(
                 }
                 if config.pricing.consider_slippage {
                     if pool.dex == DexKind::MeteoraDlmm {
-                        let quotes = meteora::quote_both_directions_with_official_sdk(
+                        let quotes = meteora::quote::quote_both_directions_with_official_sdk(
                             pool,
                             &config.helius_rpc_url,
                             config.pricing.trade_size_usdc,
