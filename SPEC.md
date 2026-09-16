@@ -34,6 +34,12 @@ BotはHeliusのSolana RPCノードを利用し、Solana上の複数DEX間にお�
 - 複数トークンペアの動的探索
 - Meteora-DLMMプールの自動探索
 - 裁定利益の確定判定
+- 裁定候補判定、投入量最適化、expectedProfitによる選別
+- 送信直前の再quoteと採算性確認
+- 専用小額ウォレットの運用、秘密鍵管理、署名
+- 自分の資金によるtransaction simulation・送信
+- Flashloan提供元との統合
+- Jito送信、Jito Bundle送信
 - fixtureの自動更新
 - fixtureファイルのGit管理
 - 本番実行時のfixture利用
@@ -52,6 +58,8 @@ BotはHeliusのSolana RPCノードを利用し、Solana上の複数DEX間にお�
 - DEX手数料とスリッページは考慮する。ただし初期実装での詳細な扱いは「推奨設計」に従う。
 - 価格比較の基準は全DEXで`USDC per SOL`に統一する。
 - Meteora-DLMMの実装では公式SDKまたは既存crateの利用を許可する。
+
+将来の裁定実行拡張では、Raydium、Orca Whirlpool、Meteora-DLMMの3 DEXすべてについて裁定用local AMM mathを実装する。Jupiterなどのオフチェーン集約APIは使わず、公式SDKまたは公式実装はlocal mathの照合・テスト用途に限定する。この方針は今回の価格監視実装には適用せず、将来マイルストーンで実装する。
 
 ## 4. 対象取引
 
@@ -221,6 +229,49 @@ Botは監視結果をSQLiteへ保存する。
 - 対象プールの流動性が設定値以上であること
 - RPC取得結果が十分に新しいこと
 - 同一方向の取引が短時間に連続しすぎないこと
+
+### 6.1 将来の裁定候補判定仕様（今回対象外）
+
+今回の実装では、以下の裁定候補判定機能を実装しない。将来のマイルストーンでは、次の順序で処理する。
+
+1. Raydium、Orca Whirlpool、Meteora-DLMMのプール状態を更新し、各RPC取得のcontext slotを記録する。
+2. 同一ペア・同一方向について、安いDEXで`USDC -> SOL`、高いDEXで`SOL -> USDC`を行う粗い価格差を検出する。逆方向も判定する。
+3. 3 DEXすべての裁定実行用quoteをlocal AMM mathで計算する。Jupiter等のオフチェーン集約APIは使わない。公式SDKまたは公式実装は照合・テスト用途に限定する。
+4. 投入量はraw amountの整数単位で探索する。粗い全体探索、利益の高い区間の局所探索、投入量の上下限、流動性制約、tick/bin境界、整数丸め後の近傍値を組み合わせ、net profitが最大の投入量を採用する。単一の局所最適化手法だけには依存しない。
+5. DEX fee、Solana base fee、priority fee、Jito tip、Flashloan fee、slippage bufferを差し引く。初期の将来実装ではこれらを固定設定値として扱う。
+6. `expectedProfit > minProfitThreshold`の場合だけ候補とする。利益のcanonical unitはUSDC raw amountとし、設定値および表示値はUSDCのDecimalへ変換する。
+7. transaction作成前に最新状態を再取得して再quoteし、再quote後も`minProfitThreshold`を超える場合だけ送信処理へ進む。
+
+pool本体、vault、tick/bin arrayの取得が複数RPC呼び出しに分かれる場合、同一snapshotとして扱えるcontext slotの最大差を初期値2 slotsまで許容する。slot差が超過した場合は全状態を再取得して1回だけ再試行し、それでも整合しない場合は候補を破棄する。
+
+候補判定のcanonicalな利益計算は以下とする。
+
+```text
+net_profit_usdc
+= final_usdc
+- initial_usdc
+- flashloan_fee_usdc
+- solana_fee_usdc
+- jito_tip_usdc
+- slippage_reserve_usdc
+```
+
+`final_usdc`にはlocal quoteによるDEX feeとprice impactを反映する。`slippage_buffer`はDEX feeと二重計上せず、追加の安全余裕として最終出力量または利益から差し引く。
+
+候補評価は毎回SQLiteへ保存するが、Discord通知は新規候補、利益の意味のある変化、再quote結果、送信結果などの状態変化に限定する。将来の状態として、`detected`、`requoted_profitable`、`requoted_unprofitable`、`quote_failed`、`transaction_built`、`submitted`、`confirmed`、`simulation_failed`、`send_failed`、`expired`を持つ。
+
+### 6.2 将来の実行拡張マイルストーン（今回対象外）
+
+裁定候補判定の後に実取引を追加する場合は、次の順序で機能を分離する。
+
+1. 既存の資産保管ウォレットと分離した専用小額ウォレットを使う。
+2. Flashloanなしで、自分の資金によるsimulation、transaction作成、送信、confirmation確認を検証する。
+3. 通常RPCでsimulation・送信を検証する。
+4. 対応mint、流動性、fee、同一transaction内のborrow/repay条件、mainnet稼働状況を確認してFlashloan提供元を決定する。
+5. 通常RPCとは分離したJito送信経路を追加し、priority feeとJito tipを別コストとして扱う。
+6. 必要性を確認した後、Jito Bundleへ拡張する。
+
+上記6項目は今回の実装では行わず、将来マイルストーンとして管理する。
 
 ## 7. リスク管理
 
@@ -642,6 +693,14 @@ Botは以下のエラーを分類して扱う。
 - 裁定判定しきい値
 - 想定取引サイズ
 - スリッページ計算に使う想定取引サイズ
+- 裁定候補判定の`minProfitThreshold`具体値
+- 投入量探索の上下限、探索精度、最大quote回数
+- snapshot slotの最大許容差を設定値にするかどうか
+- 固定コストとして使うbase fee、priority fee、Jito tip、Flashloan fee、slippage bufferの具体値
+- 専用小額ウォレットの署名方式
+- Flashloan提供元、対応mint、fee、流動性、borrow/repay仕様
+- 通常RPCとJitoの標準送信経路
+- Jito Bundleを導入する条件
 - Raydiumで対象とするプール種別
 - Orcaで対象とするプール種別
 - Meteora-DLMMの自動探索方法

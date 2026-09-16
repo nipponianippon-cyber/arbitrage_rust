@@ -18,6 +18,10 @@ pub async fn run_once(
     storage: &Storage,
     notifier: &DiscordNotifier,
 ) -> Result<(), AppError> {
+    // 裁定候補は専用の整合snapshotで評価する。失敗を記録して通常監視を続ける。
+    if let Err(error) = crate::arbitrage::run_cycle(config, rpc, storage, notifier).await {
+        storage.insert_monitor_error(&error.to_monitor_record())?;
+    }
     let enabled: Vec<&PoolConfig> = config.pools.iter().filter(|pool| pool.enabled).collect();
     let pool_addresses: Vec<String> = enabled.iter().map(|pool| pool.account_address()).collect();
     let pool_accounts = rpc.get_multiple_accounts(&pool_addresses).await?;
@@ -78,7 +82,8 @@ pub async fn run_once(
                     continue;
                 }
                 if config.pricing.consider_slippage {
-                    if pool.dex == DexKind::MeteoraDlmm {
+                    if pool.dex == DexKind::MeteoraDlmm
+                        && !config.arbitrage.as_ref().is_some_and(|c| c.enabled) {
                         let quotes = meteora::quote_both_directions_with_official_sdk(
                             pool,
                             &config.helius_rpc_url,
@@ -108,7 +113,7 @@ pub async fn run_once(
                                     && quote.success
                             })
                             .and_then(|quote| quote.effective_price);
-                    } else {
+                    } else if pool.dex != DexKind::MeteoraDlmm {
                         price.slippage_adjusted_price = slippage_adjusted_buy_price(
                             price.price,
                             config.pricing.trade_size_usdc,

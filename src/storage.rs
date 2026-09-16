@@ -41,6 +41,26 @@ impl Storage {
                 error_message TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS arbitrage_evaluations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observed_at TEXT NOT NULL,
+                route_key TEXT NOT NULL,
+                state TEXT NOT NULL,
+                input_raw TEXT,
+                output_raw TEXT,
+                expected_profit_raw TEXT,
+                fixed_cost_raw TEXT NOT NULL,
+                min_slot TEXT,
+                max_slot TEXT,
+                details_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS arbitrage_route_time
+                ON arbitrage_evaluations(route_key, id);
+            CREATE TABLE IF NOT EXISTS arbitrage_notification_state (
+                route_key TEXT PRIMARY KEY,
+                state_json TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS price_spreads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 calculated_at TEXT NOT NULL,
@@ -144,6 +164,45 @@ impl Storage {
             "monitor_errors",
             "consecutive_count",
             "INTEGER NOT NULL DEFAULT 1",
+        )?;
+        Ok(())
+    }
+
+    /// 全評価と探索失敗を保存する。u64・i128はSQLite INTEGERへ狭めずTEXTで保持する。
+    pub fn insert_candidate_evaluation(&self, value: &crate::arbitrage::CandidateEvaluation) -> Result<(), AppError> {
+        let details = serde_json::to_string(value)
+            .map_err(|e| AppError::Pricing(format!("candidate serialization failed: {e}")))?;
+        self.conn.execute(
+            "INSERT INTO arbitrage_evaluations (observed_at, route_key, state, input_raw,
+                output_raw, expected_profit_raw, fixed_cost_raw, min_slot, max_slot, details_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![value.observed_at, value.route_key, value.state,
+                value.input_raw.map(|v| v.to_string()), value.output_raw.map(|v| v.to_string()),
+                value.expected_profit_raw.map(|v| v.to_string()), value.fixed_cost_raw.to_string(),
+                value.min_slot.map(|v| v.to_string()), value.max_slot.map(|v| v.to_string()), details],
+        )?;
+        Ok(())
+    }
+
+    /// 最終通知値を読み、プロセス再起動後にも同じ候補の再通知を避ける。
+    pub fn candidate_notification_state(&self, route: &str) -> Result<Option<crate::arbitrage::NotificationState>, AppError> {
+        let json: Option<String> = self.conn.query_row(
+            "SELECT state_json FROM arbitrage_notification_state WHERE route_key = ?1",
+            params![route], |row| row.get(0),
+        ).optional()?;
+        json.map(|s| serde_json::from_str(&s)
+            .map_err(|e| AppError::Pricing(format!("invalid candidate notification state: {e}")))).transpose()
+    }
+
+    /// Webhook送信が成功した後にだけ更新する。失敗時は次サイクルで再通知できる。
+    pub fn save_candidate_notification_state(&self, value: &crate::arbitrage::CandidateEvaluation) -> Result<(), AppError> {
+        let json = serde_json::to_string(&crate::arbitrage::NotificationState {
+            state: value.state.clone(), profit_raw: value.expected_profit_raw,
+        }).map_err(|e| AppError::Pricing(format!("notification state serialization failed: {e}")))?;
+        self.conn.execute(
+            "INSERT INTO arbitrage_notification_state (route_key, state_json) VALUES (?1, ?2)
+             ON CONFLICT(route_key) DO UPDATE SET state_json = excluded.state_json",
+            params![value.route_key, json],
         )?;
         Ok(())
     }

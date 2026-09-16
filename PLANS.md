@@ -10,6 +10,8 @@
 
 初期実装は価格監視専用とする。自動売買、トランザクション作成、秘密鍵またはウォレット管理、署名、トランザクション送信、Jupiterなどのオフチェーン集約APIによる価格取得、Helius WebSocket、Enhanced API、Webhookは実装しない。
 
+2026-09-09の追加依頼により、マイルストーン10の裁定候補判定を実装対象へ追加する。マイルストーン11の送信直前再quoteには着手しない。専用小額ウォレット、自分の資金による実行、通常RPCによるsimulation・送信、Flashloan、Jito送信、Jito Bundleも引き続き対象外とする。
+
 ## 進捗
 
 - [x] `SPEC.md`を根拠に、初期実装の対象と非対象範囲を整理した。
@@ -28,6 +30,9 @@
 - [x] 開発・テスト用fixture取得補助を実装する。
 - [ ] Meteora-DLMM active bin価格式を公式SDK出力fixtureで照合する。
 - [ ] 単体テスト、結合テスト、手動確認を実施する。
+- [x] 将来の裁定候補判定・自動売買拡張のマイルストーンを定義する（マイルストーン10着手前の計画整理）。
+- [x] マイルストーン10のlocal quote、整数投入量探索、固定費控除、snapshot検査、候補保存・状態変化通知を実装する。
+- [ ] マイルストーン10の追加テストを実行し、3 DEXの同一snapshot・同一入力による公式実装とのraw amount照合を行う（静的確認のみ実施）。
 
 ## スコープ
 
@@ -58,6 +63,15 @@
 - Orca旧Constant Product AMM/CPMMプール対応
 - Meteora-DLMMプールの自動探索
 - 裁定利益の確定判定
+- 裁定候補判定の実装
+- 3 DEXの裁定用local AMM mathによるquote実装
+- 投入量の数値最適化
+- expectedProfitとminProfitThresholdによる候補選別
+- 送信直前の再quoteと採算性確認
+- 専用小額ウォレット、署名、トランザクション作成・送信
+- 自分の資金による実取引
+- Flashloan提供元との統合
+- Jito送信およびJito Bundle送信
 - fixtureの自動更新
 - fixtureファイルのGit管理
 - 本番実行時のfixture利用
@@ -87,6 +101,7 @@ SPECで推奨されているモジュール境界に沿って実装する。
 - `notifier`: Discord通知
 - `errors`: エラー型と分類
 - `runner`: 30秒周期の監視ループ
+- `arbitrage`: マイルストーン10の整合snapshot、local quote、投入量探索、候補評価
 
 データフローは次の通り。
 
@@ -99,6 +114,39 @@ SPECで推奨されているモジュール境界に沿って実装する。
 7. 結果をSQLiteへ保存する。
 8. Discordへ価格差を通知する。
 9. エラー発生時はSQLiteへ記録し、必要に応じてDiscordへ異常通知する。
+
+## 裁定候補判定と将来拡張方針
+
+以下のうち候補判定までをマイルストーン10として実装する。送信直前再quote以降は将来マイルストーンとして管理する。上記「初期実装に含めない」はマイルストーン1〜9時点の範囲を表し、今回の追加範囲はマイルストーン10の記載を優先する。
+
+### 裁定候補判定
+
+裁定候補判定と後続の送信直前再quoteでは、次の順序を固定する。1〜6をマイルストーン10、7をマイルストーン11の範囲とする。
+
+1. Raydium、Orca Whirlpool、Meteora-DLMMのpool状態を更新し、RPC context slotを記録する。
+2. 同一ペア・同一方向について、安いDEXで`USDC -> SOL`、高いDEXで`SOL -> USDC`を行う粗い価格差を検出する。逆方向も同じ条件で評価する。
+3. Raydium、Orca Whirlpool、Meteora-DLMMの3 DEXすべてについて、裁定実行用のlocal AMM mathでquoteを計算する。Jupiter等の集約APIは使わない。公式SDKまたは公式実装は、local mathの照合とテスト用途に限定する。
+4. raw amountの整数単位で投入量を探索する。投入量の上下限、流動性、partial fill、slippage上限などの実行可能範囲を先に決め、粗い探索、利益の高い区間の再探索、区間端とtick/bin境界の確認を組み合わせる。単一のBrent法だけに依存しない。
+5. DEX fee、Solana base fee、priority fee、Jito tip、Flashloan fee、slippage bufferを差し引く。初期の将来実装ではこれらのコストを固定設定値として扱う。
+6. `expectedProfit > minProfitThreshold`を満たす場合だけ候補として保存・通知する。利益のcanonical unitはUSDC raw amountとし、設定値と表示値はUSDCのDecimalへ変換する。
+7. 送信直前に全対象状態を再取得し、同じlocal mathで再quoteする。再quote後も採算性が残る場合だけtransaction作成へ進む。
+
+状態取得は、pool本体、vault、tick/bin arrayを可能な限り同じsnapshotとして扱う。RPC呼び出しが複数回に分かれる場合はcontext slotの最大差を初期値2 slotsまで許容し、超過時は全状態を再取得して1回だけ再試行する。それでも整合しない場合は候補を破棄する。
+
+候補判定結果は毎回SQLiteへ保存し、Discord通知は新規候補、利益の意味のある変化、再quote結果、送信結果などの状態変化に限定する。将来の状態名は少なくとも`detected`、`requoted_profitable`、`requoted_unprofitable`、`quote_failed`、`transaction_built`、`submitted`、`confirmed`、`simulation_failed`、`send_failed`、`expired`を想定する。
+
+### 実行拡張の段階
+
+裁定候補判定の後に実取引を追加する場合は、次の順序で分離する。
+
+1. 専用の小額ウォレットを用意し、既存の資産保管ウォレットとは分離する。
+2. Flashloanを使わず、専用ウォレットの自分の資金だけでsimulation・実行を検証する。
+3. 通常RPCでsimulation、transaction送信、confirmation確認を検証する。
+4. 対応mint、流動性、fee、同一transaction内のborrow/repay条件を確認したうえでFlashloan提供元を決定する。
+5. 通常RPC送信と分離したJito送信経路を追加し、priority feeとJito tipを別コストとして記録する。
+6. 必要性を確認した後、Jito Bundleへ拡張する。
+
+上記6段階は今回の実装対象外とし、今回の追加範囲は裁定候補の計算・保存・通知までとする。
 
 ## 設定設計
 
@@ -716,6 +764,69 @@ Meteora公式TypeScript SDKを明示実行して、Meteora-DLMM active bin価格
 - 既存の`f64`ベース実装が許容誤差を満たせない場合、`Decimal`または高精度計算へ置き換える作業を実施対象にする。
 - quote照合は、Meteora公式SDKまたは公式Rust integration相当のBinArray取得順、swap方向、partial fill設定、slippage bps設定を固定して行う。
 
+### マイルストーン10: 裁定候補判定（実装済み・実行検証待ち）
+
+プール状態を更新し、同一ペア・同一方向の粗い価格差を検出した後、3 DEXすべてのlocal AMM mathで実行可能なquoteを計算する。公式SDKは照合・テスト用途だけに使う。投入量はraw amountの整数単位で、粗い探索と局所的な再探索を組み合わせてnet profitが最大となる値を求める。
+
+完了条件:
+
+- Raydium、Orca Whirlpool、Meteora-DLMMの各方向についてlocal quoteを計算できる。
+- `USDC -> SOL -> USDC`の2レッグ経路を評価し、逆方向も評価できる。
+- DEX fee、Solana base fee、priority fee、Jito tip、Flashloan fee、slippage bufferを固定設定値として差し引ける。
+- expected profitをUSDC raw amountで比較し、`expectedProfit > minProfitThreshold`だけを候補にできる。
+- snapshot slotの整合性を検査し、不整合な状態から候補を作らない。
+- 候補評価、quote失敗、利益、投入量、差し引いたコストをSQLiteへ保存できる。送信直前再quote結果の保存はマイルストーン11に分離する。
+- 候補通知は状態変化時に限定し、同一候補を毎サイクル重複通知しない。
+
+実装内容と対応範囲:
+
+- `src/arbitrage/`に設定、raw amount整数math、DEX別local quote、snapshot取得、経路探索を実装した。中間積は`num-bigint`を使い、出力量は切り捨て、入力側feeと必要入力量は切り上げる。
+- Raydiumは既存デコーダに合わせてAMM v4（752 bytes）の稼働済みpoolを対象とし、現行公式`swap_base_in_v2`のvault準備金から`need_take_pnl`を控除する方式で両方向quoteを計算する。Raydium CLMM/CPMMは対象外。
+- Orcaは通常feeのWhirlpoolと連続したfixed TickArrayを対象に、Q64.64整数math、tick越境、`liquidity_net`の増減を計算する。adaptive fee、dynamic TickArray、Token-2022拡張は未対応としてquote失敗にする。
+- Meteora-DLMMは稼働済みpermissionless pool、標準input fee、連続BinArrayを対象に、bin価格・在庫による両方向quote、Clock timestampによるvolatility reference減衰、bin越境によるvariable fee更新を計算する。permission/activation制御、limit-order liquidity、別fee modeはquote失敗として除外する。
+- `[arbitrage]`は省略可能で、既存設定は従来の価格監視を継続する。有効化には`config.arbitrage.example.toml`のセクションを既存設定へ追加し、3 poolのprogram ownerとtick/bin配列を明示する。配列は各pool最大16個で、現在tick/binを含む連続範囲が必要。範囲外へ価格が動いた場合は設定更新が必要。
+- pool本体の初回取得は依存アカウント発見専用。quoteにはpool本体、mint、vault、配列、Clockを同じ`getMultipleAccounts`で取り直したsnapshotだけを使う。全アカウントの最小・最大slotを検査し、許容差の初期値は2。取得失敗・slot不整合では全取得を1回だけ再試行し、失敗結果も保存する。
+- 粗い限界価格比較は各DEXペアの逆方向を含む全6経路で行う。入力上下限、step、coarse点数、最大2レッグquote評価回数、レッグごとの実効価格悪化上限を設定する。coarse探索、tick/bin境界と前後1 rawの確認、第2レッグ境界のUSDC入力への二分逆引き、良い区間の再探索と広い区間の探索を組み合わせる。部分約定・ゼロ出力・impact上限超過は採用しない。有限の探索予算内の最良値であり、大域最適性は保証しない。
+- `base_fee_usdc`、`priority_fee_usdc`、`jito_tip_usdc`、`flashloan_fee_usdc`、`slippage_buffer_usdc`は明示した固定USDC額を差し引く。DEX feeはsnapshot内のオンチェーン率を各local quoteへ反映し、レッグ別入力tokenのraw feeとして保存する。DEX feeを固定費として再度差し引く二重控除は行わない。
+- USDC設定は6桁を超える小数を拒否し、利益は符号付き整数`i128`のraw amountで比較する。`expected_profit_raw > min_profit_raw`の厳密比較だけで`detected`とする。
+- `arbitrage_evaluations`に全6経路の`detected`、`unprofitable`、`no_spread`、`quote_failed`を毎回保存する。全探索点の両レッグquote、partial fill、失敗理由、固定費内訳は`details_json`へ保存する。raw値の主要列はTEXTとし、既存DBのデータは削除しない。
+- `arbitrage_notification_state`に最後に送信成功した状態と利益を保存する。新規候補、最後の通知値から設定額以上の利益変化、候補消失・復活だけを通知し、再起動後も状態を引き継ぐ。Webhook失敗時は通知状態を更新せず、次サイクルで再試行する。
+- 裁定モード有効時は通常監視のMeteora SDK補助quoteを呼ばず、裁定判定をlocal mathだけで行う。裁定モード無効時の既存価格監視とSDK補助quoteは変更しない。
+- マイルストーン11の再quote、transaction作成、simulation、署名、送信は実装していない。ここでのsnapshot再取得は整合性回復の再試行に限る。
+
+検証状況:
+
+- raw丸め、Q64.64 tick値、両方向quote、mint方向反転、tick/bin越境、partial fill、固定費、利益閾値との等号、探索予算、slot差、状態通知、SQLite保存のオフラインテストを追加した。
+- 3 DEXのバイナリsnapshotからのデコード接続、Raydium PnL控除、owner不一致、設定不備、slot不整合時の全取得再試行を検証するテストも追加した。候補専用RPCは1リクエスト10秒でtimeoutにする。
+- 保存済み`tests/fixtures/local/arbitrage_quotes.json`があれば、3 DEX・両方向の公式参照quoteと出力、fee、消費入力、完全約定有無を整数単位で比較する。fixtureには`src/arbitrage/tests.rs`の`Reference`形式（SDK名・version、timestamp、pool設定、quoteアカウント設定、owner/slot/base64付き全アカウント、期待quote）を使用する。fixture未生成時は明示的なSKIPPEDメッセージを出し、公式照合済みとは扱わない。
+- `do-plan`スキルの制約によりテスト・ビルド・Bot起動・SDK実行は行っていない。追加テストと実fixture照合は実行検証待ちであり、運用前に対応pool形式とraw quoteの照合が必要。
+
+### 将来マイルストーン11: 送信直前再quote（今回対象外）
+
+transaction作成前に最新のpool状態を再取得し、同一のlocal quote mathで再quoteする。再quote後もminProfitThresholdを超える場合だけ、後続のtransaction作成へ進む。
+
+完了条件:
+
+- 再quote専用の最新snapshotを取得できる。
+- `requoted_profitable`、`requoted_unprofitable`、`quote_failed`、`expired`を区別して保存できる。
+- 再quote不採算またはquote失敗時にtransactionを作成・送信しない。
+
+### 将来マイルストーン12: 専用小額ウォレットと自分の資金による実行（今回対象外）
+
+既存資産と分離した専用小額ウォレットを用意し、Flashloanを使わずに自分のUSDC/SOLでtransactionをsimulation、送信、confirmation確認する。秘密鍵を`config.toml`やSQLiteへ保存しない。
+
+### 将来マイルストーン13: Flashloan統合（今回対象外）
+
+USDC対応、流動性、flashloan fee、borrow/repay instruction、同一transaction内での原子性、mainnet稼働状況を確認したうえで提供元を選定し、`borrow -> 2 legs -> repay`を実装する。
+
+### 将来マイルストーン14: Jito送信（今回対象外）
+
+通常RPC送信と分離したJito送信経路を追加する。priority feeとJito tipを別々に見積もり、送信結果と実際のlanding状況を保存する。transaction本体とtipの扱いも、失敗時に不要なtipを支払わない構成を検証する。
+
+### 将来マイルストーン15: Jito Bundle拡張（今回対象外）
+
+Jito Bundleが必要なケースを確認した後、Bundle送信、Bundle status取得、失敗・期限切れ・landing確認を追加する。単一transactionで裁定処理全体を原子的に実行できる場合は、Bundle導入を必須としない。
+
 ## テスト計画
 
 単体テストでは次を検証する。
@@ -813,6 +924,9 @@ fixture検証の受け入れ基準は次の通り。
 
 ## 実装メモ
 
+- 2026-09-09: 追加依頼に従いマイルストーン10の実装を追加した。詳細は同マイルストーンの対応範囲・検証状況を参照。マイルストーン11以降は未着手。既存のSPEC.md編集は変更していない。
+
+- 2026-09-09: 裁定候補判定と自動売買拡張の方針を追加した。今回の実装では、専用小額ウォレット、自分の資金による実行、通常RPCでのsimulation・送信、Flashloan、Jito送信、Jito Bundleを実装せず、将来マイルストーンとして記録する。将来の裁定quoteは3 DEXのlocal AMM mathを正とし、公式SDKは照合・テスト用途に限定する。利益単位はUSDC raw amount、投入量探索は粗い探索と局所再探索の組み合わせ、再quote・slot整合性・状態変化通知を採用する方針とした。
 - 2026-09-03: `src/lib.rs`を追加し、通常監視Botと手動fixture取得補助が同じ設定、RPC、DEXデコード実装を使えるようにした。
 - 2026-09-03: `src/bin/fetch_fixtures.rs`を追加した。`config.toml`の有効poolを読み、pool本体、Raydium/Orcaのvault、Meteora-DLMMのtoken X/Y mint accountをHelius HTTP RPCの`getMultipleAccounts`で取得し、`tests/fixtures/local/`へRPCレスポンスに近いJSONとして保存する。
 - 2026-09-03: `price_observations`に`lb_pair_address`と`slippage_adjusted_price`を保存できるようにし、既存DB向けには不足列を追加するだけの移行にした。全組み合わせ価格差は既存互換のため`price_spread_pairs`へ保存し、従来の`price_spreads`はRaydium vs Orca互換用として残す。
@@ -829,6 +943,10 @@ fixture検証の受け入れ基準は次の通り。
 - 2026-09-03: `src/notifier.rs`にDiscord表示専用formatter、field数上限処理、長文短縮、Poolアドレス短縮を追加した。通常通知ではDEX価格、価格差USDC、bps、手数料考慮後参考差分を表示専用に丸める。異常通知ではエラーメッセージ、source、Poolアドレスを表示用に短縮する。payload生成の単体テストを追加したが、do-planスキルの制約によりimport、テスト、ビルド、プログラム実行による検証は行っていない。
 
 ## 根拠メモ
+
+- マイルストーン10: Raydium公式AMMの`process_swap_base_in_v2`の準備金補正・fee丸めを参照した。https://github.com/raydium-io/raydium-amm/blob/master/program/src/processor.rs
+- マイルストーン10: Orca公式coreのtick整数定数とWhirlpool/fixed TickArrayのレイアウトを参照した。https://github.com/orca-so/whirlpools/blob/main/rust-sdk/core/src/math/tick.rs / https://github.com/orca-so/whirlpools/blob/main/programs/whirlpool/src/state/fixed_tick_array.rs
+- マイルストーン10: Meteora公式IDLのLbPair/BinArray/Bin/StaticParameters/VariableParametersと、fee・bin quote・volatility更新を参照した。https://github.com/MeteoraAg/dlmm-sdk/blob/main/ts-client/src/dlmm/idl/idl.json / https://github.com/MeteoraAg/dlmm-sdk/blob/main/ts-client/src/dlmm/helpers/fee.ts / https://github.com/MeteoraAg/dlmm-sdk/blob/main/ts-client/src/dlmm/helpers/bin.ts / https://github.com/MeteoraAg/dlmm-sdk/blob/main/ts-client/src/dlmm/index.ts
 
 - Orca公式ドキュメントでは、現在のOrcaはconcentrated liquidity poolを中心に構成され、Whirlpoolは2022年に導入されたconcentrated liquidity programと説明されている。根拠: https://docs.orca.so/support/about
 - Orca公式ドキュメントのPrice & Ticksでは、Whirlpoolがsquare-root priceで価格を追跡し、Whirlpool accountがcurrent sqrt-priceとcurrent tick-indexを保持すると説明されている。根拠: https://docs.orca.so/developers/architecture/price-and-ticks
@@ -848,7 +966,15 @@ fixture検証の受け入れ基準は次の通り。
 - `config.example.toml`に記載するMeteora-DLMM SOL/USDCの具体的なLbPairアドレス
 - 裁定判定しきい値
 - 想定取引サイズ
-- Raydiumで対象とするプール種別
+- 裁定候補判定で使う最小利益しきい値の具体値
+- 投入量探索の上下限、探索精度、最大quote回数
+- 裁定local quoteの未対応形式（Whirlpool adaptive fee/dynamic TickArray、Meteoraの別fee mode/limit order/activation制御）を拡張する時期
+- 固定コストとして使うbase fee、priority fee、Jito tip、Flashloan fee、slippage bufferの具体値
+- 専用小額ウォレットの署名方式
+- Flashloan提供元と対応mint、fee、流動性、borrow/repay仕様
+- 通常RPCとJitoのどちらを標準送信経路にするか
+- Jito Bundleを導入する条件
+- Raydium AMM v4以外のプール種別を追加する時期
 - Meteora-DLMM active bin SDK参照fixtureに含める具体的な複数pool
 - Meteora-DLMMの自動探索方法
 - ローカル実行時の起動方法

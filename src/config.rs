@@ -7,6 +7,8 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
+    /// 未指定なら従来の価格監視だけを行う。
+    pub arbitrage: Option<crate::arbitrage::ArbitrageConfig>,
     pub bot: BotConfig,
     pub database: DatabaseConfig,
     pub pricing: PricingConfig,
@@ -164,6 +166,9 @@ fn required_env(name: &str) -> Result<String, AppError> {
 }
 
 pub fn validate_config(config: &AppConfig) -> Result<(), AppError> {
+    if let Some(arbitrage) = &config.arbitrage {
+        arbitrage.validate(&config.pools)?;
+    }
     if config.bot.interval_seconds == 0 {
         return Err(AppError::Config(
             "bot.interval_seconds must be greater than zero".to_string(),

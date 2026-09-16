@@ -3,6 +3,8 @@
 .env.example
 config.toml
 config.example.toml
+config.arbitrage.example.toml
+config.arbitrage.toml
 data/
 tests/fixtures/local/
 tests/fixtures/meteora_dlmm_active_bin_sdk.generated.json

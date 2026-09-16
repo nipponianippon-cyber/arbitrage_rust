@@ -14,6 +14,8 @@ dotenvy = "0.15"
 thiserror = "1"
 chrono = { version = "0.4", features = ["serde", "clock"] }
 rust_decimal = { version = "1", features = ["serde"] }
+num-bigint = "0.4"
+num-traits = "0.2"
 base64 = "0.22"
 bs58 = "0.5"
 rusqlite = { version = "0.32", features = ["bundled"] }

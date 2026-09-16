@@ -71,6 +71,11 @@ impl DiscordNotifier {
         .await
     }
 
+    /// 候補の新規検出・利益変化・候補消失だけを通知する。
+    pub async fn send_candidate(&self, candidate: &crate::arbitrage::CandidateEvaluation) -> Result<(), AppError> {
+        self.send_payload(build_candidate_payload(candidate, &self.bot_name, &self.environment)).await
+    }
+
     async fn send_payload(&self, payload: Value) -> Result<(), AppError> {
         if !self.enabled {
             tracing::info!("{payload}");
@@ -94,6 +99,33 @@ impl DiscordNotifier {
         }
         Ok(())
     }
+}
+
+/// raw値を表示時だけUSDCへ変換し、SQLiteに保存する値を丸めない。
+pub fn build_candidate_payload(c: &crate::arbitrage::CandidateEvaluation, bot_name: &str, environment: &str) -> Value {
+    let amount = |raw: i128| rust_decimal::Decimal::from_i128_with_scale(raw, 6).to_string();
+    let slots = match (c.min_slot, c.max_slot) {
+        (Some(min), Some(max)) => format!("{min}–{max}"),
+        _ => "n/a".into(),
+    };
+    json!({
+        "username": bot_name,
+        "allowed_mentions": { "parse": [] },
+        "embeds": [{
+            "title": "SOL/USDC 裁定候補",
+            "description": format!("{} → {} / {}", c.buy_dex, c.sell_dex, c.state),
+            "timestamp": c.observed_at,
+            "fields": [
+                field("Input", c.input_raw.map(|v| format!("{} USDC", amount(i128::from(v)))).unwrap_or_else(|| "n/a".into()), true),
+                field("Expected profit", c.expected_profit_raw.map(|v| format!("{} USDC", amount(v))).unwrap_or_else(|| "n/a".into()), true),
+                field("Fixed costs", format!("{} USDC", amount(i128::from(c.fixed_cost_raw))), true),
+                field("Snapshot slots", slots, false),
+                field("Buy pool", shorten_address(&c.buy_pool), false),
+                field("Sell pool", shorten_address(&c.sell_pool), false)
+            ],
+            "footer": { "text": format!("{bot_name} / {environment} / 候補判定のみ") }
+        }]
+    })
 }
 
 pub fn build_price_spread_embed_payload(
